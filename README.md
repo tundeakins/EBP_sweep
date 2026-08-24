@@ -67,6 +67,14 @@ Or from the command line:
 ebp-sweep run "TIC 343127696" "TIC 81741369" --quality-bitmask default
 ```
 
+## Tutorial
+
+New to the package (or to eclipse timing in general)? Start with
+[`notebooks/tutorial_TIC343127696.ipynb`](notebooks/tutorial_TIC343127696.ipynb) — a guided,
+pedagogical walkthrough of the whole pipeline on a real target, with background on apsidal
+precession and O&ndash;C diagrams, explanations of each of the five eclipse-timing methods, and
+exercises to check your understanding.
+
 For a step-by-step walkthrough with access to every intermediate product
 (the cleaned light curve, the measured period, the separated eclipses,
 ...), see [`examples/single_target.py`](examples/single_target.py) or use
@@ -115,6 +123,7 @@ src/EBP_sweep/
     utils.py       — generic numeric helpers (robust statistics, outlier clipping, ...)
     config.py      — output directory/log-file locations
     cli.py         — `ebp-sweep` command-line entry point
+notebooks/         — pedagogical tutorial notebook (see "Tutorial" above)
 examples/          — runnable scripts covering the workflows above
 tests/             — unit tests for the dependency-light, deterministic functions
 ```
