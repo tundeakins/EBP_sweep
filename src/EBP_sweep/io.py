@@ -142,9 +142,10 @@ def read_global_eclipse_params(tic_id):
     Returns
     -------
     tuple of dict
-        Two dictionaries, one for the primary eclipse and one for the secondary eclipse,
-        each in the format ``{param_name: {'value': float, 'stderr': float or None}}``.
-        Parameters that were held fixed in the fit have ``stderr=None``.
+        Two dictionaries, one for the primary eclipse and one for the
+        secondary eclipse, each in the format ``{param_name: ufloat}``.
+        Parameters that were held fixed in the fit come back with a
+        zero uncertainty (``ufloat(value, 0)``), since they weren't varied.
 
     Raises
     ------
@@ -167,7 +168,9 @@ def read_global_eclipse_params(tic_id):
     for row_label, row in df.iterrows():
         param_name, _, ecl_type = str(row_label).rpartition('_')
         value = row['value'] if pd.notna(row['value']) else None
-        stderr = row['stderr'] if pd.notna(row['stderr']) else None
-        params.setdefault(ecl_type, {})[param_name] = ufloat(value, stderr) #{'value': value, 'stderr': stderr}
+        # a parameter held fixed (vary=False) in the fit has no stderr; treat its
+        # uncertainty as exactly 0 rather than None, which ufloat can't accept
+        stderr = row['stderr'] if pd.notna(row['stderr']) else 0
+        params.setdefault(ecl_type, {})[param_name] = ufloat(value, stderr)
 
     return params['pri'], params['sec']

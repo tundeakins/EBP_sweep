@@ -36,26 +36,30 @@ def _write_global_params_csv(figures_dir, tic_id):
     return csv_path
 
 
-def test_read_global_eclipse_params_groups_by_eclipse_type_and_strips_suffix(tmp_path, monkeypatch):
+def test_read_global_eclipse_params_splits_into_primary_and_secondary_and_strips_suffix(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "FIGURES_DIR", str(tmp_path))
     _write_global_params_csv(str(tmp_path), "TIC 999999999")
 
-    params = read_global_eclipse_params("TIC 999999999")
+    pri_params, sec_params = read_global_eclipse_params("TIC 999999999")
 
-    assert set(params.keys()) == {"pri", "sec"}
-    assert params["pri"]["t0"] == {"value": 100.0, "stderr": 0.001}
-    assert params["sec"]["t0"] == {"value": 102.5, "stderr": 0.002}
+    assert pri_params["t0"].nominal_value == pytest.approx(100.0)
+    assert pri_params["t0"].std_dev == pytest.approx(0.001)
+    assert sec_params["t0"].nominal_value == pytest.approx(102.5)
+    assert sec_params["t0"].std_dev == pytest.approx(0.002)
     # 'P_pri' -> 'P', not 'P_pri' -- the eclipse-type suffix is stripped
-    assert "P" in params["pri"] and "P_pri" not in params["pri"]
+    assert "P" in pri_params and "P_pri" not in pri_params
 
 
-def test_read_global_eclipse_params_reports_fixed_parameters_as_none_stderr(tmp_path, monkeypatch):
+def test_read_global_eclipse_params_gives_fixed_parameters_zero_uncertainty(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "FIGURES_DIR", str(tmp_path))
     _write_global_params_csv(str(tmp_path), "TIC 999999999")
 
-    params = read_global_eclipse_params("TIC 999999999")
+    pri_params, _ = read_global_eclipse_params("TIC 999999999")
 
-    assert params["pri"]["P"] == {"value": 5.0, "stderr": None}
+    # 'P_pri' was written with a blank stderr (a fixed, non-varied parameter);
+    # ufloat can't hold an uncertainty of None, so it comes back as 0 instead
+    assert pri_params["P"].nominal_value == pytest.approx(5.0)
+    assert pri_params["P"].std_dev == 0
 
 
 def test_read_global_eclipse_params_raises_if_never_saved(tmp_path, monkeypatch):

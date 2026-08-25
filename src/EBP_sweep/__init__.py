@@ -8,9 +8,11 @@ Pipeline (recommended entry point):
 Individual stages, for step-by-step / notebook-style workflows:
     :mod:`EBP_sweep.io`, :mod:`EBP_sweep.periods`, :mod:`EBP_sweep.timing`,
     :mod:`EBP_sweep.batman_fit`, :mod:`EBP_sweep.plotting`,
-    :mod:`EBP_sweep.reporting`, :mod:`EBP_sweep.followup`
+    :mod:`EBP_sweep.reporting`
 
-See the ``examples/`` directory in the source repository for full workflows.
+See the ``examples/`` directory in the source repository for full workflows,
+and ``notebooks/Follow_up_fitting.ipynb`` for reusing a TESS-derived eclipse
+shape to fit ground-based follow-up photometry.
 """
 
 from .pipeline import EclipsingBinaryTarget, run_target, run_many
@@ -33,7 +35,5 @@ __all__ = [
     "separate_eclipses",
     "compute_eclipse_times",
     "compute_oc_and_best_period",
-    "load_ground_based_photometry",
-    "run_followup_fit",
     "create_DV_summary_pdf",
 ]

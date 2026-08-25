@@ -558,8 +558,10 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
         If True (and 'batman' is in ``methods``), return only the pooled global
         eclipse shape parameters for the primary and secondary eclipse instead
         of running the full per-epoch timing. Useful for reusing the TESS-derived
-        eclipse shape to fit sparse ground-based follow-up data
-        (see :mod:`EBP_sweep.followup`).
+        eclipse shape to fit sparse ground-based follow-up data (see also
+        :func:`EBP_sweep.io.read_global_eclipse_params`, which reads the
+        pooled shape parameters saved to disk back out, and
+        ``notebooks/Follow_up_fitting.ipynb``).
     verbose : bool, optional
         If True, print progress messages. Default is True.
 

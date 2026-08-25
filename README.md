@@ -1,8 +1,7 @@
 # EBP_sweep
 
 Measure eclipse timing variations (ETVs) and apsidal precession in
-eclipsing binaries from TESS photometry, with optional refinement from
-ground-based follow-up observations.
+eclipsing binaries from TESS photometry.
 
 Given a TIC ID, the pipeline:
 
@@ -17,10 +16,12 @@ Given a TIC ID, the pipeline:
    the lowest-scatter method per eclipse type.
 6. Saves diagnostic plots and a one-page PDF summary per target.
 
-Ground-based follow-up photometry (e.g. a single partially-covered eclipse)
-can reuse the TESS-derived eclipse shape to recover a precise mid-eclipse
-time from sparse data — see `EBP_sweep.followup` and
-`examples/ground_based_followup.py`.
+The pooled eclipse shape from step 4's `batman` fit (depth, duration, impact
+parameter) is also saved to a CSV per target and can be read back with
+`EBP_sweep.read_global_eclipse_params` — this is what
+[`notebooks/Follow_up_fitting.ipynb`](notebooks/Follow_up_fitting.ipynb) uses
+to fit sparse, single-eclipse ground-based follow-up photometry, reusing the
+TESS-derived shape to recover a precise mid-eclipse time.
 
 This package was extracted from an exploratory analysis notebook; the
 underlying algorithms are unchanged, they're just organised into a proper,
@@ -35,12 +36,24 @@ the easiest way to get everything working:
 ```bash
 conda create -n ebp_sweep python=3.10
 conda activate ebp_sweep
-pip install -e ".[dev]"
 ```
 
-Or with plain `pip` in an existing environment:
+**Directly from GitHub** (no local clone needed):
 
 ```bash
+pip install git+https://github.com/tundeakins/EBP_sweep.git
+```
+
+Pin to a specific branch, tag, or commit with `@` (e.g.
+`git+https://github.com/tundeakins/EBP_sweep.git@v0.1.0`), and add it to a
+`requirements.txt` as `EBP-sweep @ git+https://github.com/tundeakins/EBP_sweep.git`.
+
+**From a local clone** (for development, or to run the examples/tutorial
+notebook, which aren't installed as package data):
+
+```bash
+git clone https://github.com/tundeakins/EBP_sweep.git
+cd EBP_sweep
 pip install -e ".[dev]"
 ```
 
@@ -73,7 +86,9 @@ New to the package (or to eclipse timing in general)? Start with
 [`notebooks/tutorial_TIC343127696.ipynb`](notebooks/tutorial_TIC343127696.ipynb) — a guided,
 pedagogical walkthrough of the whole pipeline on a real target, with background on apsidal
 precession and O&ndash;C diagrams, explanations of each of the five eclipse-timing methods, and
-exercises to check your understanding.
+exercises to check your understanding. For fitting ground-based follow-up photometry against a
+TESS-derived eclipse shape, see
+[`notebooks/Follow_up_fitting.ipynb`](notebooks/Follow_up_fitting.ipynb).
 
 For a step-by-step walkthrough with access to every intermediate product
 (the cleaned light curve, the measured period, the separated eclipses,
@@ -94,8 +109,7 @@ target.plot_diagnostics()
 target.save_summary()
 ```
 
-See [`examples/`](examples/) for batch runs, a check against literature
-periods, and the ground-based follow-up workflow.
+See [`examples/`](examples/) for batch runs and a check against literature periods.
 
 ## Output
 
@@ -111,19 +125,19 @@ a pipeline to write elsewhere.
 
 ```
 src/EBP_sweep/
-    io.py          — downloading/cleaning TESS light curves; magnitude-to-flux conversion
+    io.py          — downloading/cleaning TESS light curves; magnitude-to-flux conversion;
+                      reading back saved global eclipse-shape parameters
     periods.py     — BLS/TLS period search; primary/secondary eclipse separation
     timing.py      — four eclipse-timing methods (half-depth, fold, cross-correlation,
                       ingress/egress) and O-C computation
     batman_fit.py  — eclipse timing via batman transit-model fitting
-    followup.py    — fitting ground-based photometry against a TESS-derived eclipse shape
     plotting.py    — diagnostic and summary plots
     reporting.py   — PDF data-validation summaries
     pipeline.py    — EclipsingBinaryTarget, run_target, run_many
     utils.py       — generic numeric helpers (robust statistics, outlier clipping, ...)
     config.py      — output directory/log-file locations
     cli.py         — `ebp-sweep` command-line entry point
-notebooks/         — pedagogical tutorial notebook (see "Tutorial" above)
+notebooks/         — tutorial and ground-based follow-up notebooks (see "Tutorial" above)
 examples/          — runnable scripts covering the workflows above
 tests/             — unit tests for the dependency-light, deterministic functions
 ```
