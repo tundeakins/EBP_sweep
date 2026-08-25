@@ -35,7 +35,9 @@ dependencies = [
     "astropy>=6.1",
     "lightkurve>=2.5",
     "astroquery>=0.4.11",
-    "transitleastsquares>=1.33",
+    # PyPI's transitleastsquares is stuck at 1.32; the 1.33 release this
+    # package was developed against is only available from GitHub.
+    "transitleastsquares @ git+https://github.com/hippke/tls.git",
     "batman-package>=2.5.2",
     "lmfit>=1.3.4",
     "uncertainties>=3.2.3",
@@ -52,6 +54,13 @@ Homepage = "https://github.com/tundeakins/EBP_sweep"
 
 [project.scripts]
 ebp-sweep = "EBP_sweep.cli:main"
+
+[tool.hatch.metadata]
+# Required for the transitleastsquares dependency above, which is pinned to a
+# git URL rather than a PyPI version (see the comment on that line). This
+# also means EBP-sweep itself cannot be published to PyPI as-is — PyPI
+# rejects packages with direct-reference (URL) dependencies.
+allow-direct-references = true
 
 [tool.hatch.version]
 path = "src/EBP_sweep/__init__.py"

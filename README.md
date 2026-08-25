@@ -30,12 +30,19 @@ importable, testable package.
 ## Installation
 
 Some dependencies (`batman-package`, `transitleastsquares`) build C
-extensions, so a working C compiler is required. A conda environment is
-the easiest way to get everything working:
+extensions, so a working C compiler is required. `transitleastsquares` is
+pinned to a GitHub commit rather than a PyPI release — PyPI's latest is
+1.32, but this package needs the unreleased 1.33. A conda environment is
+the easiest way to get everything working, and in particular to get a
+prebuilt `numba`/`llvmlite` (a `transitleastsquares` dependency): building
+those from source via plain `pip` can fail on some platforms with missing
+LLVM/OpenMP toolchain errors, so it's worth letting conda install them
+*before* installing this package:
 
 ```bash
 conda create -n ebp_sweep python=3.10
 conda activate ebp_sweep
+conda install -c conda-forge numba
 ```
 
 **Directly from GitHub** (no local clone needed):
