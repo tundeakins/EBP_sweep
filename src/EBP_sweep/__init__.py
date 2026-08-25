@@ -14,10 +14,9 @@ See the ``examples/`` directory in the source repository for full workflows.
 """
 
 from .pipeline import EclipsingBinaryTarget, run_target, run_many
-from .io import load_and_clean_lc, mag_to_flux
+from .io import load_and_clean_lc, mag_to_flux, read_global_eclipse_params
 from .periods import find_orbital_period, prepare_flat_lc, separate_eclipses
 from .timing import compute_eclipse_times, compute_oc_and_best_period
-from .followup import load_ground_based_photometry, run_fit as run_followup_fit
 from .reporting import create_DV_summary_pdf
 
 __version__ = "0.1.0"
@@ -28,6 +27,7 @@ __all__ = [
     "run_many",
     "load_and_clean_lc",
     "mag_to_flux",
+    "read_global_eclipse_params",
     "find_orbital_period",
     "prepare_flat_lc",
     "separate_eclipses",

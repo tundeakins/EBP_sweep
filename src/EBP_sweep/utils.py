@@ -7,6 +7,9 @@ nearest-value search and a couple of array-formatting utilities.
 
 import numpy as np
 from scipy.stats import linregress, mode
+from astropy.coordinates import EarthLocation, SkyCoord
+from astropy.time import Time
+import astropy.units as u
 
 
 def robust_std(data):
@@ -251,6 +254,30 @@ def select_best_index(stds, floor=1e-4, fallback_index=2):
             return idx
 
     return fallback_index
+
+def to_bjd_tdb(time_jd_utc, ra, dec, site_name):
+    """Convert JD(UTC) observation times to BJD_TDB (barycentric-corrected).
+
+    Parameters
+    ----------
+    time_jd_utc : array-like
+        Observation times as Julian Dates in UTC.
+    ra, dec : float
+        Right ascension and declination of the target, in degrees.
+    site_name : str
+        Name recognised by ``astropy.coordinates.EarthLocation.of_site``,
+        e.g. ``'Roque de los Muchachos, La Palma'``.
+
+    Returns
+    -------
+    np.ndarray
+        Times converted to BJD_TDB.
+    """
+    star = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame='icrs')
+    observatory_location = EarthLocation.of_site(site_name)
+    t = Time(time_jd_utc, format='jd', scale='utc', location=observatory_location).tdb
+    ltt = t.light_travel_time(star, 'barycentric', ephemeris='builtin')
+    return (t + ltt).value
 
 
 def estimate_time_uncertainty(time, flux, flux_err, half_depth):

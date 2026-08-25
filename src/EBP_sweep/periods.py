@@ -131,7 +131,7 @@ def flatten_tess_by_sector(lc, P, T0):
     return eclipse_masks, flat_lc, trends
 
 
-def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2):
+def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2, verbose=True):
     """
     Determine the secondary period of a binary system using the phased light curve.
 
@@ -149,6 +149,8 @@ def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2):
         The oversampling factor.
     mf: float, optional
         Multiplicative factor for eclipse width. Default is 2.
+    verbose: bool, optional
+        If True, print progress messages. Default is True.
 
     Returns
     -------
@@ -220,7 +222,7 @@ def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2):
 
     lc_nonprimary_nonan = lc_nonprimary[~np.isnan(lc_nonprimary.flux)]
 
-    model_secondary = transitleastsquares(lc_nonprimary_nonan.time.value, lc_nonprimary_nonan.flux.value)
+    model_secondary = transitleastsquares(lc_nonprimary_nonan.time.value, lc_nonprimary_nonan.flux.value,verbose=verbose)
     results_secondary = model_secondary.power(period_min=0.99 * P_best, period_max=1.01 * P_best, oversampling_factor=o_factor, show_progress_bar=False)
     P_secondary = results_secondary.period
 
@@ -236,7 +238,7 @@ def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2):
     return P_secondary, phased_secondary, lc_nonprimary, noneclipse_fluxes, eclipse_min, eclipse_max, results_secondary, phased, T0
 
 
-def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2):
+def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2, verbose=True):
     """
     Determine the primary period of a binary system using the phased light curve.
 
@@ -256,6 +258,8 @@ def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2)
         The oversampling factor.
     mf: float, optional
         Multiplicative factor for eclipse width. Default is 2.
+    verbose: bool, optional
+        If True, print progress messages. Default is True.
 
     Returns
     -------
@@ -354,7 +358,7 @@ def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2)
 
     lc_nonsecondary_nonan = lc_nonsecondary[~np.isnan(lc_nonsecondary.flux)]
 
-    model_primary = transitleastsquares(lc_nonsecondary_nonan.time.value, lc_nonsecondary_nonan.flux.value)
+    model_primary = transitleastsquares(lc_nonsecondary_nonan.time.value, lc_nonsecondary_nonan.flux.value, verbose=verbose)
 
     results_primary = model_primary.power(period_min=0.99 * P_best, period_max=1.01 * P_best, oversampling_factor=o_factor, show_progress_bar=False)
     P_primary = results_primary.period
@@ -371,7 +375,7 @@ def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2)
     return P_primary, phased_primary, lc_nonsecondary, secondary_eclipse_min, secondary_eclipse_max, results_primary, phased, T0
 
 
-def find_orbital_period(tic_id, good_lc, flux_threshold=None):
+def find_orbital_period(tic_id, good_lc, flux_threshold=None, verbose=True):
     """Run BLS + TLS to find and refine the orbital period.
 
     Returns (P_TLS, results_TLS) or (None, None) on failure.
@@ -446,9 +450,9 @@ def find_orbital_period(tic_id, good_lc, flux_threshold=None):
         return None, None
 
     o_factor = get_oversampling_factor(good_lc.time.value)
-    tls_model = transitleastsquares(good_lc.time.value, good_lc.flux.value)
+    tls_model = transitleastsquares(good_lc.time.value, good_lc.flux.value,verbose=verbose)
     results = tls_model.power(period_min=0.99 * P_correct, period_max=1.01 * P_correct,
-                               oversampling_factor=o_factor, show_progress_bar=False)
+                                oversampling_factor=o_factor, show_progress_bar=False)
 
     if np.isnan(results.period):
         config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
@@ -457,13 +461,13 @@ def find_orbital_period(tic_id, good_lc, flux_threshold=None):
     return results.period, results
 
 
-def prepare_flat_lc(tic_id, good_lc, P_TLS, results_TLS):
+def prepare_flat_lc(tic_id, good_lc, P_TLS, results_TLS, verbose=True):
     """Flatten the light curve sector by sector and return (flat_lc, t0, phased, o_factor).
 
     Also saves a diagnostic phase-fold plot.
     """
     _, flat_test, _ = flatten_tess_by_sector(good_lc, P_TLS, results_TLS.T0)
-    plot_all_sectors(tic_id, flat_test, 'detrended')
+    plot_all_sectors(tic_id, flat_test, 'detrended',verbose)
     flat_lc = flat_test[0].append(flat_test[i + 1] for i in range(len(flat_test) - 1))
     t0 = results_TLS.T0 + 0.2 * P_TLS
     phased = flat_lc.fold(P_TLS, t0, normalize_phase=True)
@@ -475,8 +479,9 @@ def prepare_flat_lc(tic_id, good_lc, P_TLS, results_TLS):
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f'TIC{tic_id[4:]}_Allphased_TLS.jpg')
     plt.savefig(out_path, bbox_inches='tight', dpi=100)
-    print(f"\tSaved phase-fold plot to {out_path}")
-    plt.close()
+    if verbose:
+        print(f"\tSaved phase-fold plot to {out_path}")
+    plt.close(fig)
     save_all_sectors_multipage_pdf(tic_id)
 
     o_factor = get_oversampling_factor(good_lc.time.value)
@@ -484,7 +489,7 @@ def prepare_flat_lc(tic_id, good_lc, P_TLS, results_TLS):
     return flat_lc, t0, phased, o_factor
 
 
-def separate_eclipses(tic_id, flat_lc, phased, P_TLS, t0, o_factor):
+def separate_eclipses(tic_id, flat_lc, phased, P_TLS, t0, o_factor, verbose=True):
     """Separate primary and secondary eclipses using TLS on masked light curves.
 
     Parameters
@@ -501,6 +506,8 @@ def separate_eclipses(tic_id, flat_lc, phased, P_TLS, t0, o_factor):
         Reference time for phase-folding.
     o_factor : float
         Oversampling factor for TLS.
+    verbose : bool, optional
+        Whether to print verbose output. Default True.
 
     Returns
     -------
@@ -519,13 +526,13 @@ def separate_eclipses(tic_id, flat_lc, phased, P_TLS, t0, o_factor):
         * results_secondary: TLS results for the secondary eclipse.
     """
     P_sec, phased_sec, lc_nonpri, _, ecl_min, ecl_max, res_sec, phased, t0 = \
-        get_secondary_period(flat_lc, phased, P_TLS, t0, o_factor, mf=3)
+        get_secondary_period(flat_lc, phased, P_TLS, t0, o_factor, mf=3, verbose=verbose)
     if P_sec == 0:
         config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
         return None
 
     P_pri, phased_pri, lc_nonsec, sec_ecl_min, sec_ecl_max, res_pri, phased, t0 = \
-        get_primary_period(flat_lc, phased, phased_sec, P_sec, t0, o_factor, mf=3)
+        get_primary_period(flat_lc, phased, phased_sec, P_sec, t0, o_factor, mf=3, verbose=verbose)
     if P_pri == 0:
         config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
         return None

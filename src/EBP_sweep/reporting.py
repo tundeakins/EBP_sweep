@@ -108,4 +108,14 @@ def create_DV_summary_pdf(tic_id,
                            primary_method, secondary_method,
                            pri_std, sec_std):
     """Create a summary PDF for the target with all relevant plots and information."""
-    make_pdf(tic_id, P_pri_new, primP_err, P_sec_new, secP_err, flat_lc, primary_method, secondary_method, pri_std, sec_std)
+    # this can fail due to connection error. retry a few times before giving up
+    for attempt in range(3):
+        try:
+            make_pdf(tic_id, P_pri_new, primP_err, P_sec_new, secP_err,
+                     flat_lc, primary_method, secondary_method, pri_std, sec_std)
+            break  # success
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed for TIC {tic_id}: {e}")
+            if attempt == 2:
+                print(f"Failed to create PDF for TIC {tic_id} after 3 attempts.")
+    # make_pdf(tic_id, P_pri_new, primP_err, P_sec_new, secP_err, flat_lc, primary_method, secondary_method, pri_std, sec_std)

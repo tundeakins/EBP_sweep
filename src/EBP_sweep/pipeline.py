@@ -23,7 +23,7 @@ class EclipsingBinaryTarget:
         TIC ID of the target, e.g. ``'TIC 343127696'``.
     quality_bitmask : str, optional
         Quality bitmask passed to `lightkurve`; see
-        :func:`EBP_sweep.io.load_and_clean_lc`. Default ``'default'``.
+        :func:`EBP_sweep.io.load_and_clean_lc`. Default ``'hard'``.
     mask_outliers : bool, optional
         Whether to mask outlier points during download-time cleaning.
         Default False.
@@ -34,6 +34,8 @@ class EclipsingBinaryTarget:
     epoch_width : float, optional
         Width (in units of P) of the per-epoch window used by the batman
         fitting method. Default 0.2.
+    verbose : bool, optional
+        Whether to print progress messages. Default True. 
 
     Each pipeline stage is available as its own method (`download`,
     `find_period`, `flatten`, `separate_eclipses`, `compute_timing`,
@@ -44,11 +46,14 @@ class EclipsingBinaryTarget:
     """
 
     def __init__(self, tic_id, quality_bitmask='default', mask_outliers=False,
-                 methods=('hd', 'fold', 'cc', 'gress', 'batman'), epoch_width=0.2):
+                 methods=['hd', 'fold', 'cc', 'gress', 'batman'], epoch_width=0.2, verbose=True):
         self.tic_id = tic_id
         self.quality_bitmask = quality_bitmask
         self.mask_outliers = mask_outliers
-        self.methods = list(methods)
+        self.methods = [methods] if isinstance(methods, str) else methods
+        for m in self.methods:
+            assert m in ['hd', 'fold', 'cc', 'gress', 'batman'], \
+                f"Method {m} is not recognized. Must be one of ['hd', 'fold', 'cc', 'gress', 'batman']."
         self.epoch_width = epoch_width
 
         self.good_lc = None
@@ -62,6 +67,7 @@ class EclipsingBinaryTarget:
         self.methods_used = None
         self.obs_pri = self.obs_sec = self.err_pri = self.err_sec = None
         self.oc = None
+        self.verbose=verbose
 
     def download(self):
         """Download and clean the light curve. Returns True on success."""
@@ -70,24 +76,24 @@ class EclipsingBinaryTarget:
 
     def find_period(self):
         """Find the orbital period via BLS + TLS. Returns True on success."""
-        self.P_TLS, self.results_TLS = periods.find_orbital_period(self.tic_id, self.good_lc)
+        self.P_TLS, self.results_TLS = periods.find_orbital_period(self.tic_id, self.good_lc, verbose=self.verbose)
         return self.P_TLS is not None
 
     def flatten(self):
         """Flatten the light curve sector-by-sector and phase-fold it on `P_TLS`."""
         self.flat_lc, self.t0, self.phased, self.o_factor = periods.prepare_flat_lc(
-            self.tic_id, self.good_lc, self.P_TLS, self.results_TLS)
+            self.tic_id, self.good_lc, self.P_TLS, self.results_TLS, verbose=self.verbose)
 
     def separate_eclipses(self):
         """Separate primary and secondary eclipses. Returns True on success."""
         self.eclipses = periods.separate_eclipses(
-            self.tic_id, self.flat_lc, self.phased, self.P_TLS, self.t0, self.o_factor)
+            self.tic_id, self.flat_lc, self.phased, self.P_TLS, self.t0, self.o_factor, verbose=self.verbose)
         return self.eclipses is not None
 
     def compute_timing(self):
         """Compute eclipse times with all configured methods. Returns True on success."""
         result = timing.compute_eclipse_times(
-            self.tic_id, self.eclipses, epoch_width=self.epoch_width, methods=self.methods)
+            self.tic_id, self.eclipses, epoch_width=self.epoch_width, methods=self.methods,verbose=self.verbose)
         if result is None:
             return False
         (self.obs_pri, self.obs_sec, self.err_pri, self.err_sec), self.methods_used = result
@@ -97,7 +103,7 @@ class EclipsingBinaryTarget:
         """Compute O-C arrays and refined periods from the eclipse timing results."""
         self.oc = timing.compute_oc_and_best_period(
             self.tic_id, self.obs_pri, self.obs_sec, self.err_pri, self.err_sec,
-            self.eclipses['P_primary'], self.eclipses['P_secondary'], self.methods_used)
+            self.eclipses['P_primary'], self.eclipses['P_secondary'], self.methods_used, self.verbose)
         return self.oc
 
     @property
@@ -168,7 +174,7 @@ class EclipsingBinaryTarget:
         return True
 
 
-def run_target(tic_id, quality_bitmask='default', **kwargs):
+def run_target(tic_id, quality_bitmask='hard',**kwargs):
     """Run the full eclipse-timing pipeline for a single TIC ID.
 
     Convenience wrapper around :class:`EclipsingBinaryTarget`. Additional
@@ -189,7 +195,7 @@ def run_target(tic_id, quality_bitmask='default', **kwargs):
     return target
 
 
-def run_many(tic_ids, quality_bitmask='default', **kwargs):
+def run_many(tic_ids, quality_bitmask='hard', **kwargs):
     """Run the full pipeline over several TIC IDs, continuing past individual failures.
 
     Parameters

@@ -525,7 +525,7 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
 
 
 def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fold', 'cc', 'gress', 'batman'],
-                           return_global_eclipse_params=False):
+                           return_global_eclipse_params=False,verbose=True):
     """
     Compute eclipse times using various methods and return the observed times and errors.
 
@@ -560,6 +560,8 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
         of running the full per-epoch timing. Useful for reusing the TESS-derived
         eclipse shape to fit sparse ground-based follow-up data
         (see :mod:`EBP_sweep.followup`).
+    verbose : bool, optional
+        If True, print progress messages. Default is True.
 
     Returns
     -------
@@ -572,7 +574,9 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
     kwargs_sec = (tic_id, p['phased'], p['lc_nonprimary'], p['P_secondary'], p['results_secondary'])
     if isinstance(methods, str):
         methods = [methods]
-
+    for m in methods:
+        if m not in ['hd', 'fold', 'cc', 'gress', 'batman']:
+            raise ValueError(f"Method {m} is not recognized. Must be one of ['hd', 'fold', 'cc', 'gress', 'batman'].")
     bat_pri = bat_sec = []
     bat_pri_err = bat_sec_err = []
 
@@ -580,17 +584,20 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
         print('Fitting primary eclipses with batman model...')
         bat_pri, bat_pri_err, indv_shape_params, global_shape_params = get_batman_eclipse_times(*kwargs_pri, 'pri', epoch_width)
         P_bat = global_shape_params['P']
-        print(f"\tP_bat (pri) = {P_bat:.7f} days")
+        if verbose:
+            print(f"\tP_bat (pri) = {P_bat:.7f} days")
         plot_shape_variation(tic_id, indv_shape_params, global_shape_params, 'pri')
 
         if bat_pri == 0:
             config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
             return None
 
-        print('Fitting secondary eclipses with batman model...')
+        if verbose:
+            print('Fitting secondary eclipses with batman model...')
         bat_sec, bat_sec_err, indv_shape_params_sec, global_shape_params_sec = get_batman_eclipse_times(*kwargs_sec, 'sec', epoch_width)
         P_bat_sec = global_shape_params_sec['P']
-        print(f"\tP_bat (sec) = {P_bat_sec:.7f} days")
+        if verbose:
+            print(f"\tP_bat (sec) = {P_bat_sec:.7f} days")
         plot_shape_variation(tic_id, indv_shape_params_sec, global_shape_params_sec, 'sec')
 
         if bat_sec == 0:
@@ -622,7 +629,8 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
     return (obs_pri, obs_sec, err_pri, err_sec), methods
 
 
-def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec, P_primary, P_secondary, methods):
+def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec, 
+                                P_primary, P_secondary, methods,verbose=True):
     """Compute O-C arrays, select best method, and refine periods.
 
     Returns a dict with OC arrays, corrected periods, best indices, etc.
@@ -668,9 +676,10 @@ def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec, P_pri
         sec_coeffs.append(co)
         sec_uncerts.append(un)
 
-    bi_pri = select_best_index(pri_stds)  # best index for primary method
-    bi_sec = select_best_index(sec_stds)  # best index for secondary method
-    print(f"\nBest primary method index: {bi_pri} ({methods[bi_pri]}), Best secondary method index: {bi_sec} ({methods[bi_sec]})")
+    bi_pri = np.argmin(pri_stds) #select_best_index(pri_stds)  # best index for primary method
+    bi_sec = np.argmin(sec_stds) #select_best_index(sec_stds)  # best index for secondary method
+    if verbose:
+        print(f"\nBest primary method index: {bi_pri} ({methods[bi_pri]}), Best secondary method index: {bi_sec} ({methods[bi_sec]})")
 
     # Remove trends from both OC "lines"
     mid_coeffs = (pri_coeffs[bi_pri] + sec_coeffs[bi_sec]) / 2

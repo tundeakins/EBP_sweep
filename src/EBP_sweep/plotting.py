@@ -18,7 +18,8 @@ from PIL import Image
 from . import config
 
 
-def plot_subfigures(tic_id, phased_primary, phased_secondary, phased_secondary_on_primary, phased_primary_on_secondary, xlim_primary, xlim_secondary):
+def plot_subfigures(tic_id, phased_primary, phased_secondary, phased_secondary_on_primary, 
+                    phased_primary_on_secondary, xlim_primary, xlim_secondary, verbose=True):
     """
     Plot the four subfigures for the eclipses phased on primary and secondary periods."""
 
@@ -149,13 +150,14 @@ def plot_subfigures(tic_id, phased_primary, phased_secondary, phased_secondary_o
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f'TIC{tic_id[4:]}_4panel_new.png')
     fig.savefig(out_path, dpi=250, bbox_inches='tight')
-    print(f"\tSaved 4-panel plot to {out_path}")
+    plt.close(fig)
+    if verbose: print(f"\tSaved 4-panel plot to {out_path}")
 
 
 def plot_best_oc(tic_id, observed_primary_eclipse_times, observed_secondary_eclipse_times, OCs_primary, OCs_secondary, primary_eclipse_err, secondary_eclipse_err):
     """Plot the best O-C diagram with error bars for primary and secondary eclipses."""
 
-    plt.figure(figsize=(8, 5))
+    fig = plt.figure(figsize=(8, 5))
     plt.errorbar(observed_primary_eclipse_times, OCs_primary, yerr=primary_eclipse_err, fmt='o', color='b', ecolor='b', capsize=3, alpha=0.75,
                  markeredgecolor='k', label='Primary Eclipses')
     plt.errorbar(observed_secondary_eclipse_times, OCs_secondary, yerr=secondary_eclipse_err, fmt='o', color='r', ecolor='r', capsize=3,
@@ -169,6 +171,7 @@ def plot_best_oc(tic_id, observed_primary_eclipse_times, observed_secondary_ecli
     out_dir = config.fig_path(config.FIG_OC_DIR)
     os.makedirs(out_dir, exist_ok=True)
     plt.savefig(os.path.join(out_dir, f'TIC{tic_id[4:]}_OCwErr.png'), dpi=250)
+    plt.close(fig)
 
 
 def save_all_sectors_multipage_pdf(tic_id):
@@ -195,7 +198,7 @@ def save_all_sectors_multipage_pdf(tic_id):
     [os.remove(img) for img in image_paths if os.path.exists(img)]
 
 
-def plot_all_sectors(tic_id, lc_collection, append_str=""):
+def plot_all_sectors(tic_id, lc_collection, append_str="", verbose=True):
     """
     Create a subplot image showing time vs flux for all sectors.
 
@@ -248,7 +251,8 @@ def plot_all_sectors(tic_id, lc_collection, append_str=""):
         fig.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
 
-        print(f"\tSaved all sectors plot to {out_path}")
+        if verbose: 
+            print(f"\tSaved all sectors plot to {out_path}")
 
     except Exception as e:
         print(f"Error creating all sectors plot: {e}")
@@ -278,7 +282,7 @@ def save_epoch_fits_pdf(tic_id, P, epoch_fits, ecl_type, method, extra_t0s=None)
     n_epochs = len(epoch_fits)
     n_pages = max(1, (n_epochs + per_page - 1) // per_page)
 
-    out_dir = config.fig_path(config.FIG_EPOCHTIMES_DIR)
+    out_dir = config.fig_path(os.path.join(config.FIG_EPOCHTIMES_DIR, f'TIC{tic_id[4:]}'))
     os.makedirs(out_dir, exist_ok=True)
     pdf_path = os.path.join(out_dir, f'TIC{tic_id[4:]}_EpochFits_{ecl_type}_{method}_P{P:.4f}.pdf')
     cols, lin_sty = ['g', 'b', 'k', 'm'], ['--', ':', '-.', '-']

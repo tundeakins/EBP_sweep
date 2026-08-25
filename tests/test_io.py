@@ -1,6 +1,10 @@
-import numpy as np
+import os
 
-from EBP_sweep.io import mag_to_flux
+import numpy as np
+import pytest
+
+from EBP_sweep import config
+from EBP_sweep.io import mag_to_flux, read_global_eclipse_params
 
 
 def test_mag_to_flux_brighter_magnitude_gives_higher_flux():
@@ -17,3 +21,45 @@ def test_mag_to_flux_output_shape_matches_input():
     fluxes, fluxes_err = mag_to_flux(m, merr, nsim=500)
     assert len(fluxes) == len(m)
     assert len(fluxes_err) == len(m)
+
+
+def _write_global_params_csv(figures_dir, tic_id):
+    """Recreate the CSV format written by EBP_sweep.batman_fit.get_batman_eclipse_times."""
+    out_dir = os.path.join(figures_dir, config.FIG_ECLIPSEFIT_DIR, f'TIC{tic_id[4:]}')
+    os.makedirs(out_dir, exist_ok=True)
+    csv_path = os.path.join(out_dir, f'TIC{tic_id[4:]}_GlobalParams.csv')
+    with open(csv_path, "w") as f:
+        f.write(",value,stderr,bounds\n")
+        f.write('t0_pri,100.0,0.001,"(99.9, 100.1)"\n')
+        f.write('P_pri,5.0,,"(4.9, 5.1)"\n')  # stderr blank -> a fixed (non-varied) parameter
+        f.write('t0_sec,102.5,0.002,"(102.4, 102.6)"\n')
+    return csv_path
+
+
+def test_read_global_eclipse_params_groups_by_eclipse_type_and_strips_suffix(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "FIGURES_DIR", str(tmp_path))
+    _write_global_params_csv(str(tmp_path), "TIC 999999999")
+
+    params = read_global_eclipse_params("TIC 999999999")
+
+    assert set(params.keys()) == {"pri", "sec"}
+    assert params["pri"]["t0"] == {"value": 100.0, "stderr": 0.001}
+    assert params["sec"]["t0"] == {"value": 102.5, "stderr": 0.002}
+    # 'P_pri' -> 'P', not 'P_pri' -- the eclipse-type suffix is stripped
+    assert "P" in params["pri"] and "P_pri" not in params["pri"]
+
+
+def test_read_global_eclipse_params_reports_fixed_parameters_as_none_stderr(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "FIGURES_DIR", str(tmp_path))
+    _write_global_params_csv(str(tmp_path), "TIC 999999999")
+
+    params = read_global_eclipse_params("TIC 999999999")
+
+    assert params["pri"]["P"] == {"value": 5.0, "stderr": None}
+
+
+def test_read_global_eclipse_params_raises_if_never_saved(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "FIGURES_DIR", str(tmp_path))
+
+    with pytest.raises(FileNotFoundError):
+        read_global_eclipse_params("TIC 000000000")

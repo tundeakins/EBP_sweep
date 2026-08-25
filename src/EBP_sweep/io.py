@@ -5,9 +5,13 @@ input, plus a helper for converting ground-based follow-up photometry
 (magnitudes) into relative flux.
 """
 
+import os
+
 import numpy as np
 import lightkurve as lk
+import pandas as pd
 from scipy.stats import mode
+from uncertainties import ufloat
 
 from . import config
 from .plotting import plot_all_sectors
@@ -73,7 +77,8 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False):
         bkg = bkg.data
 
     upper = np.nanmedian(bkg) + 3 * np.nanstd(bkg)
-    k = np.isfinite(bkg) & (bkg < upper)
+    lower = np.nanmedian(bkg) - 3 * np.nanstd(bkg)
+    k = np.isfinite(bkg) & (bkg < upper) & (bkg > lower)
     lc_final = lc[k]
 
     if np.all(np.isnan(lc_final.flux.value)):
@@ -116,3 +121,53 @@ def mag_to_flux(m, merr, nsim=1000):
         fluxes_err[i] = np.sqrt(np.var(dist))
 
     return fluxes, fluxes_err
+
+
+def read_global_eclipse_params(tic_id):
+    """Read back the pooled batman eclipse-shape parameters for a target.
+
+    `EBP_sweep.batman_fit.get_batman_eclipse_times` saves the global
+    (pooled-eclipse) fit parameters for each eclipse type to
+    ``<FIGURES_DIR>/<FIG_ECLIPSEFIT_DIR>/TIC<id>/TIC<id>_GlobalParams.csv``,
+    one row per parameter named ``'{param}_{ecl_type}'`` (e.g. ``'t0_pri'``,
+    ``'rp_sec'``). This function reads that file back and reorganises it by
+    eclipse type, with the ``'_pri'`` / ``'_sec'`` suffix stripped from each
+    parameter name.
+
+    Parameters
+    ----------
+    tic_id : str
+        TIC ID of the target, e.g. ``'TIC 343127696'``.
+
+    Returns
+    -------
+    tuple of dict
+        Two dictionaries, one for the primary eclipse and one for the secondary eclipse,
+        each in the format ``{param_name: {'value': float, 'stderr': float or None}}``.
+        Parameters that were held fixed in the fit have ``stderr=None``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no ``GlobalParams`` CSV has been saved for this target yet — run
+        the ``batman`` eclipse-timing method first, e.g. via
+        ``EBP_sweep.timing.compute_eclipse_times(..., methods='batman')``.
+    """
+    csv_path = config.fig_path(config.FIG_ECLIPSEFIT_DIR, f'TIC{tic_id[4:]}', f'TIC{tic_id[4:]}_GlobalParams.csv')
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(
+            f"No global eclipse-shape parameters found for {tic_id} at '{csv_path}'. "
+            "Run the batman eclipse-timing method first, e.g. via "
+            "EBP_sweep.timing.compute_eclipse_times(..., methods='batman')."
+        )
+
+    df = pd.read_csv(csv_path, index_col=0)
+
+    params = {}
+    for row_label, row in df.iterrows():
+        param_name, _, ecl_type = str(row_label).rpartition('_')
+        value = row['value'] if pd.notna(row['value']) else None
+        stderr = row['stderr'] if pd.notna(row['stderr']) else None
+        params.setdefault(ecl_type, {})[param_name] = ufloat(value, stderr) #{'value': value, 'stderr': stderr}
+
+    return params['pri'], params['sec']

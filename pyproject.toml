@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
-    { name = "Babatunde Akinsanmi", email = "babatundeakinsanmi@gmail.com" },
+    { name = "Babatunde Akinsanmi", email = "t.akinsanmi@unsw.edu.au" },
+    { name = "Margo Thornton", email = "m.thornton@unsw.edu.au" }
 ]
 keywords = [
     "astronomy",

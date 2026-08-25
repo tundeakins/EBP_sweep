@@ -1,10 +1,9 @@
 """Sanity-check the TLS period search against a set of literature periods.
 
 Runs only the light-curve download and period-finding stages (skipping
-flattening / eclipse separation / timing) for a list of targets with known
-published periods, and reports how closely the TLS period search recovers
-them. Useful as a quick regression check when tuning
-``EBP_sweep.periods.find_orbital_period``.
+flattening / eclipse separation / timing) for a list of targets with
+published period in Thornton+2025, and reports how closely the TLS period search recovers
+them. Useful for tuning ``EBP_sweep.periods.find_orbital_period``.
 
     python examples/known_periods_check.py
 """
