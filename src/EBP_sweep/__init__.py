@@ -15,13 +15,20 @@ and ``notebooks/Follow_up_fitting.ipynb`` for reusing a TESS-derived eclipse
 shape to fit ground-based follow-up photometry.
 """
 
+import warnings
+
+# lightkurve and transitleastsquares raise non-actionable UserWarnings on nearly every
+# import and light-curve search which clutter pipeline output. Undo
+# with `warnings.resetwarnings()` if you'd rather see everything.
+warnings.filterwarnings("ignore") 
+
 from .pipeline import EclipsingBinaryTarget, run_target, run_many
 from .io import load_and_clean_lc, mag_to_flux, read_global_eclipse_params
 from .periods import find_orbital_period, prepare_flat_lc, separate_eclipses
 from .timing import compute_eclipse_times, compute_oc_and_best_period
 from .reporting import create_DV_summary_pdf
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "EclipsingBinaryTarget",

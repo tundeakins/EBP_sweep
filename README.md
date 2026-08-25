@@ -18,8 +18,7 @@ Given a TIC ID, the pipeline:
 
 The pooled eclipse shape from step 4's `batman` fit (depth, duration, impact
 parameter) is also saved to a CSV per target and can be read back with
-`EBP_sweep.read_global_eclipse_params` — this is what
-[`notebooks/Follow_up_fitting.ipynb`](notebooks/Follow_up_fitting.ipynb) uses
+`EBP_sweep.read_global_eclipse_params` — this is what [`notebooks/Follow_up_fitting.ipynb`](notebooks/Follow_up_fitting.ipynb) uses
 to fit sparse, single-eclipse ground-based follow-up photometry, reusing the
 TESS-derived shape to recover a precise mid-eclipse time.
 
@@ -29,20 +28,11 @@ importable, testable package.
 
 ## Installation
 
-Some dependencies (`batman-package`, `transitleastsquares`) build C
-extensions, so a working C compiler is required. `transitleastsquares` is
-pinned to a GitHub commit rather than a PyPI release — PyPI's latest is
-1.32, but this package needs the unreleased 1.33. A conda environment is
-the easiest way to get everything working, and in particular to get a
-prebuilt `numba`/`llvmlite` (a `transitleastsquares` dependency): building
-those from source via plain `pip` can fail on some platforms with missing
-LLVM/OpenMP toolchain errors, so it's worth letting conda install them
-*before* installing this package:
+A conda environment is the easiest way to get everything working:
 
 ```bash
-conda create -n ebp_sweep python=3.10
+conda create -n ebp_sweep -c conda-forge python=3.10 "numpy<2" numba
 conda activate ebp_sweep
-conda install -c conda-forge numba
 ```
 
 **Directly from GitHub** (no local clone needed):
@@ -52,8 +42,7 @@ pip install git+https://github.com/tundeakins/EBP_sweep.git
 ```
 
 Pin to a specific branch, tag, or commit with `@` (e.g.
-`git+https://github.com/tundeakins/EBP_sweep.git@v0.1.0`), and add it to a
-`requirements.txt` as `EBP-sweep @ git+https://github.com/tundeakins/EBP_sweep.git`.
+`git+https://github.com/tundeakins/EBP_sweep.git@v0.1.0`)
 
 **From a local clone** (for development, or to run the examples/tutorial
 notebook, which aren't installed as package data):
@@ -69,7 +58,7 @@ pip install -e ".[dev]"
 ```python
 from EBP_sweep import run_target
 
-target = run_target("TIC 343127696", quality_bitmask="default")
+target = run_target("TIC 343127696", quality_bitmask="hardest")
 print(target.oc["P_primary_new"], target.oc["P_secondary_new"])
 ```
 
@@ -84,7 +73,7 @@ results = run_many(["TIC 343127696", "TIC 81741369"])
 Or from the command line:
 
 ```bash
-ebp-sweep run "TIC 343127696" "TIC 81741369" --quality-bitmask default
+ebp-sweep run "TIC 343127696" "TIC 81741369" --quality-bitmask hard
 ```
 
 ## Tutorial
@@ -92,9 +81,9 @@ ebp-sweep run "TIC 343127696" "TIC 81741369" --quality-bitmask default
 New to the package (or to eclipse timing in general)? Start with
 [`notebooks/tutorial_TIC343127696.ipynb`](notebooks/tutorial_TIC343127696.ipynb) — a guided,
 pedagogical walkthrough of the whole pipeline on a real target, with background on apsidal
-precession and O&ndash;C diagrams, explanations of each of the five eclipse-timing methods, and
-exercises to check your understanding. For fitting ground-based follow-up photometry against a
-TESS-derived eclipse shape, see
+precession and O&ndash;C diagrams, explanations of each of the five eclipse-timing methods
+(see [Thornton et al. 2026](https://ui.adsabs.harvard.edu/abs/2026MNRAS.548ag515T/abstract)),
+For fitting ground-based follow-up photometry against a TESS-derived eclipse shape, see
 [`notebooks/Follow_up_fitting.ipynb`](notebooks/Follow_up_fitting.ipynb).
 
 For a step-by-step walkthrough with access to every intermediate product
