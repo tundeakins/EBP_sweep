@@ -230,7 +230,7 @@ def format_ranges(arr):
     return ', '.join(f"{s}-{e}" if s != e else f"{s}" for s, e in ranges)
 
 
-def select_best_index(stds, floor=1e-4, fallback_index=2):
+def select_best_index(stds, floor=1e-4, fallback_index=4):
     """
     Select the best index based on the standard deviations.
 
@@ -241,7 +241,7 @@ def select_best_index(stds, floor=1e-4, fallback_index=2):
     floor : float, optional
         Minimum acceptable standard deviation. Default is 1e-4.
     fallback_index : int, optional
-        Index to return if no standard deviation exceeds the floor. Default is 2.
+        Index to return if no standard deviation exceeds the floor. Default is 4.
 
     Returns
     -------

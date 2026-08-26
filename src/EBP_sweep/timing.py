@@ -678,8 +678,8 @@ def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec,
         sec_coeffs.append(co)
         sec_uncerts.append(un)
 
-    bi_pri = np.argmin(pri_stds) #select_best_index(pri_stds)  # best index for primary method
-    bi_sec = np.argmin(sec_stds) #select_best_index(sec_stds)  # best index for secondary method
+    bi_pri = select_best_index(pri_stds)  # best index for primary method
+    bi_sec = select_best_index(sec_stds)  # best index for secondary method
     if verbose:
         print(f"\nBest primary method index: {bi_pri} ({methods[bi_pri]}), Best secondary method index: {bi_sec} ({methods[bi_sec]})")
 
