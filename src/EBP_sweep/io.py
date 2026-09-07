@@ -18,7 +18,7 @@ from .plotting import plot_all_sectors
 from .utils import outlier_clipping
 
 
-def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False):
+def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_clip_sigma=2, sector_bounds=(None,None)):
     """Download, background-filter, and outlier-clean the light curve.
 
     Returns good_lc (stitched, cleaned TessLightCurve) or None on failure.
@@ -42,15 +42,49 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False):
     mask_outliers : bool, optional
         If True, outlier points will be masked from the light curve.
         See All sector plot to confirm that the outlier masking is not removing real eclipses.
+    bkg_clip_sigma : float, optional
+        Number of standard deviations to use when clipping the background flux.
+        Default is 2.
+    sector_bounds : tuple, optional
+        Tuple specifying the lower and upper bounds of sectors to include.
+        Default is (None, None), which includes all sectors.
+
+    Returns
+    -------
+    lc_final : TessLightCurve or None
+        The cleaned and stitched light curve, or None if the download or cleaning failed.
+
+    Notes
+    -----
+    The function will automatically flag TIC IDs that fail to download or have impossible light curves.
+    It also allows filtering of sectors based on the specified sector_bounds.
+    
 
     """
-    search_result = lk.search_lightcurve(tic_id, mission='TESS', author="QLP")
+    for attempt in range(3):
+        try:
+            search_result = lk.search_lightcurve(tic_id, mission='TESS', author="QLP")
+            break
+        except Exception as e:
+            print(f"Data Download:Attempt {attempt+1} failed with error: {e}")
+            if attempt == 2:
+                config.flag_ticid(tic_id, config.ELEANOR_TICIDS_LOG)
+                return None
+
     if len(search_result.table) == 0:
         config.flag_ticid(tic_id, config.ELEANOR_TICIDS_LOG)
         return None
 
     print(f"Downloading light curve for {tic_id}...")
     lc_collection = search_result.download_all(quality_bitmask=quality_bitmask)
+
+    # filter sectors based on sector_bounds
+    lower_bound, upper_bound = sector_bounds
+    lc_collection = lk.LightCurveCollection([
+        lc for lc in lc_collection
+        if (lower_bound is None or lc.sector >= lower_bound)
+        and (upper_bound is None or lc.sector <= upper_bound)
+    ])
 
     # remove outlier points even below median flux
     for i, lc in enumerate(lc_collection):
@@ -76,8 +110,8 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False):
     if isinstance(bkg, np.ma.MaskedArray):
         bkg = bkg.data
 
-    upper = np.nanmedian(bkg) + 3 * np.nanstd(bkg)
-    lower = np.nanmedian(bkg) - 3 * np.nanstd(bkg)
+    upper = np.nanmedian(bkg) + bkg_clip_sigma * np.nanstd(bkg)
+    lower = np.nanmedian(bkg) - bkg_clip_sigma * np.nanstd(bkg)
     k = np.isfinite(bkg) & (bkg < upper) & (bkg > lower)
     lc_final = lc[k]
 

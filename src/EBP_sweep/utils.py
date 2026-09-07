@@ -11,6 +11,28 @@ from astropy.coordinates import EarthLocation, SkyCoord
 from astropy.time import Time
 import astropy.units as u
 
+def phase_fold(t, per, t0,phase0=-0.5):
+	"""Phase fold a light curve.
+
+	Parameters
+	-----------
+	t : array-like
+		Time stamps.
+	per : float
+		Period.
+	t0 : float
+		Time of transit center.
+	phase0 : float
+		start phase of the folded data
+
+	Returns
+	-------
+	phase : array-like
+		Phases starting from phase0.
+	"""
+	return ( ( ( (t-t0)/per % 1) - phase0) % 1) + phase0
+
+
 
 def robust_std(data):
     """
@@ -60,6 +82,96 @@ def get_lc_noise_level(flux, time=None, max_gap_factor=3):
     # np.sqrt(2) — corrects for the fact that differencing two noise samples with variance sigma^2
     # yields variance 2*sigma^2, so dividing by sqrt(2) recovers the per-point noise sigma
     return robust_std(dflux) / np.sqrt(2)
+
+
+def red_noise_beta_factor(residuals, time=None, max_gap_factor=3, min_bin=4, max_nbins=8, n_test_sizes=6):
+    """
+    Estimate a red-noise inflation factor from best-fit residuals (Pont et
+    al. 2006; see also Winn 2010 review, eq. 8). White (uncorrelated) noise
+    averages down as 1/sqrt(M) when binned into groups of M points; the
+    presence of time-correlated ("red") noise makes the actual binned
+    scatter fall off slower than that. The ratio of actual-to-expected
+    binned scatter, averaged over a range of bin sizes, gives a
+    multiplicative factor that a formal (white-noise-only) least-squares
+    covariance underestimates parameter uncertainties by, and can be
+    multiplied into those uncertainties to correct for it.
+
+    Parameters
+    ----------
+    residuals : array-like
+        Best-fit (data - model) residuals, in time order.
+    time : array-like, optional
+        Time values matching `residuals`. When given, gaps larger than
+        `max_gap_factor` times the median cadence split the data into
+        contiguous segments (e.g. distinct pooled eclipse epochs) so that a
+        bin is never formed from points that aren't actually adjacent in
+        time; each segment is binned independently and the resulting
+        ratios are pooled. Without `time`, `residuals` is treated as one
+        contiguous, evenly-sampled run (as it is within a single local
+        eclipse-fit window).
+    max_gap_factor : float, optional
+        Gap-detection threshold relative to the median cadence, used only
+        when `time` is given. Default 3.
+    min_bin : int, optional
+        Smallest bin size (in points) to test. Default 4.
+    max_nbins : int, optional
+        The coarsest bin size tested is chosen so that at least this many
+        bins remain (len(segment) // max_nbins). Default 8.
+    n_test_sizes : int, optional
+        Number of bin sizes to test between `min_bin` and the coarsest
+        size. Default 6.
+
+    Returns
+    -------
+    float
+        Inflation factor >= 1. A value of 1 means no significant red noise
+        was detected (or too few points to tell); values > 1 indicate the
+        formal uncertainty should be scaled up by that factor.
+    """
+    residuals = np.asarray(residuals, dtype=float)
+
+    if time is not None:
+        time = np.asarray(time, dtype=float)
+        finite = np.isfinite(residuals) & np.isfinite(time)
+        residuals, time = residuals[finite], time[finite]
+        order = np.argsort(time)
+        residuals, time = residuals[order], time[order]
+        dt = np.diff(time)
+        median_dt = np.nanmedian(dt) if len(dt) else 0
+        if median_dt > 0:
+            gap_idx = np.where(dt > max_gap_factor * median_dt)[0] + 1
+            segments = np.split(residuals, gap_idx)
+        else:
+            segments = [residuals]
+    else:
+        segments = [residuals[np.isfinite(residuals)]]
+
+    pooled = np.concatenate(segments) if segments else np.array([])
+    sigma1 = robust_std(pooled) if len(pooled) else np.nan
+    if not np.isfinite(sigma1) or sigma1 == 0:
+        return 1.0
+
+    betas = []
+    for seg in segments:
+        n = len(seg)
+        max_bin = n // max_nbins
+        if n < 4 * min_bin or max_bin < min_bin:
+            continue  # segment too short to characterize correlated noise reliably
+
+        bin_sizes = np.unique(np.linspace(min_bin, max_bin, n_test_sizes).astype(int))
+        for m in bin_sizes:
+            nbins = n // m
+            if nbins < 3:
+                continue
+            binned_means = seg[:nbins * m].reshape(nbins, m).mean(axis=1)
+            sigma_actual = np.std(binned_means, ddof=1)  # unbiased scatter of the bin means
+            sigma_expected = sigma1 / np.sqrt(m)  # white-noise expectation
+            betas.append(sigma_actual / sigma_expected)
+
+    if not betas:
+        return 1.0
+
+    return max(1.0, float(np.mean(betas)))
 
 
 def outlier_clipping(x, y, yerr=None, clip=5, width=15, verbose=True, return_clipped_indices=False):
@@ -230,16 +342,30 @@ def format_ranges(arr):
     return ', '.join(f"{s}-{e}" if s != e else f"{s}" for s, e in ranges)
 
 
-def select_best_index(stds, floor=1e-4, fallback_index=4):
+def select_best_index(stds, chi2_red=None, floor=1e-2, chi2_band=(0.2, 5.0), fallback_index=4):
     """
     Select the best index based on the standard deviations.
 
     Parameters
     ----------
     stds : array-like
-        Array of standard deviations.
+        Array of standard deviations in minutes.
+    chi2_red : array-like, optional
+        Reduced chi-square per method, i.e. sum((res/err)**2) / dof. When
+        given, candidates are first restricted to methods whose chi2_red
+        falls within `chi2_band` -- errorbars that are neither badly
+        underestimated (chi2_red too high, residuals larger than claimed
+        precision) nor badly overestimated/overfit (chi2_red too low) --
+        before ranking by `stds`. This keeps a method from winning just
+        because it reports small errorbars that don't actually match its
+        residual scatter; wrms alone can't tell "small and accurate" apart
+        from "small and wrong". If no method passes the band, falls back to
+        the plain `stds`-only selection below.
     floor : float, optional
-        Minimum acceptable standard deviation. Default is 1e-4.
+        Minimum acceptable standard deviation. Default is 1e-2 in minutes
+    chi2_band : tuple, optional
+        (low, high) acceptable range for chi2_red, used only when chi2_red
+        is given. Default is (0.2, 5.0).
     fallback_index : int, optional
         Index to return if no standard deviation exceeds the floor. Default is 4.
 
@@ -248,6 +374,15 @@ def select_best_index(stds, floor=1e-4, fallback_index=4):
     int
         Index of the best standard deviation.
     """
+    stds = np.asarray(stds, dtype=float)
+
+    if chi2_red is not None:
+        chi2_red = np.asarray(chi2_red, dtype=float)
+        lo, hi = chi2_band
+        for idx in np.argsort(stds):
+            if stds[idx] > floor and lo <= chi2_red[idx] <= hi:
+                return idx
+        # nothing well-calibrated -- fall back to precision-only selection below
 
     for idx in np.argsort(stds):
         if stds[idx] > floor:

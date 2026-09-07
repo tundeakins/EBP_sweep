@@ -22,18 +22,19 @@ import warnings
 # with `warnings.resetwarnings()` if you'd rather see everything.
 warnings.filterwarnings("ignore") 
 
-from .pipeline import EclipsingBinaryTarget, run_target, run_many
+from .pipeline import EclipsingBinaryTarget, run_target, run_many, load
 from .io import load_and_clean_lc, mag_to_flux, read_global_eclipse_params
 from .periods import find_orbital_period, prepare_flat_lc, separate_eclipses
 from .timing import compute_eclipse_times, compute_oc_and_best_period
 from .reporting import create_DV_summary_pdf
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "EclipsingBinaryTarget",
     "run_target",
     "run_many",
+    "load",
     "load_and_clean_lc",
     "mag_to_flux",
     "read_global_eclipse_params",

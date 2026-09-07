@@ -17,6 +17,18 @@ from PIL import Image
 
 from . import config
 
+# Fixed color + marker per timing method, independent of which subset is
+# passed in for a given target, so a method's identity on the plot never
+# shifts with which other methods happen to be present (colorblind-safe
+# categorical set; see EBP_sweep's dataviz palette notes).
+METHOD_STYLE = {
+    'hd':     dict(color='#2a78d6', marker='o'),
+    'fold':   dict(color='#eb6834', marker='o'),
+    'cc':     dict(color='#1baf7a', marker='o'),
+    'gress':  dict(color='#eda100', marker='o'),
+    'batman': dict(color='#e87ba4', marker='o'),
+}
+
 
 def plot_subfigures(tic_id, phased_primary, phased_secondary, phased_secondary_on_primary, 
                     phased_primary_on_secondary, xlim_primary, xlim_secondary, verbose=True):
@@ -158,6 +170,7 @@ def plot_best_oc(tic_id, observed_primary_eclipse_times, observed_secondary_ecli
     """Plot the best O-C diagram with error bars for primary and secondary eclipses."""
 
     fig = plt.figure(figsize=(8, 5))
+    plt.title(f"TIC {tic_id[4:]} O-C Diagram", fontsize=14)
     plt.errorbar(observed_primary_eclipse_times, OCs_primary, yerr=primary_eclipse_err, fmt='o', color='b', ecolor='b', capsize=3, alpha=0.75,
                  markeredgecolor='k', label='Primary Eclipses')
     plt.errorbar(observed_secondary_eclipse_times, OCs_secondary, yerr=secondary_eclipse_err, fmt='o', color='r', ecolor='r', capsize=3,
@@ -170,8 +183,70 @@ def plot_best_oc(tic_id, observed_primary_eclipse_times, observed_secondary_ecli
     plt.grid()
     out_dir = config.fig_path(config.FIG_OC_DIR)
     os.makedirs(out_dir, exist_ok=True)
-    plt.savefig(os.path.join(out_dir, f'TIC{tic_id[4:]}_OCwErr.png'), dpi=250)
+    plt.savefig(os.path.join(out_dir, f'TIC{tic_id[4:]}_OCwErr.png'), dpi=100, bbox_inches='tight')
     plt.close(fig)
+
+
+def plot_method_comparison(tic_id, obs_pri, obs_sec, err_pri, err_sec, methods,
+                            Tref_pri, Tref_sec, Pref, pri_stds, sec_stds, pri_red_chi2, sec_red_chi2,
+                            best_index_primary=None, best_index_secondary=None):
+    """Compare each timing method's O-C scatter side by side.
+
+    Every method's eclipse times are folded onto the *same* (Tref, Pref)
+    reference ephemeris (one row per eclipse type, one column per method),
+    rather than each method's own best-fit line. Detrending each method
+    separately would absorb any systematic offset between methods into the
+    fit and hide it; referencing them all to one ephemeris is what makes a
+    timing offset or precision difference between methods visible at all.
+    """
+    n = len(methods)
+    fig, axes = plt.subplots(2, n, figsize=(3.2 * n, 6), sharey='col', squeeze=False)
+
+    rows = [
+        ('Primary', obs_pri, err_pri, Tref_pri, pri_stds, pri_red_chi2, best_index_primary),
+        ('Secondary', obs_sec, err_sec, Tref_sec, sec_stds, sec_red_chi2, best_index_secondary),
+    ]
+
+    for row, (label, obs_list, err_list, Tref, stds, red_chi2, best_index) in enumerate(rows):
+        for col, method in enumerate(methods):
+            ax = axes[row, col]
+            style = METHOD_STYLE.get(method, dict(color='0.4', marker='o'))
+
+            obs = np.asarray(obs_list[col])
+            err_min = np.asarray(err_list[col]) * 24 * 60
+            cyc = np.round((obs - obs[0]) / Pref)
+            OC = (obs - (obs[0] + Pref * cyc)) * 24 * 60
+
+            ax.errorbar(obs, OC, yerr=err_min, fmt=style['marker'], color=style['color'],
+                        ecolor=style['color'], markeredgecolor='k', mew=0.4, ms=5,
+                        capsize=2, alpha=0.85, linestyle='none')
+            ax.axhline(0, color='gray', linestyle='dashed', linewidth=1)
+            if red_chi2[col] is None:
+                ax.text(0.05, 0.05, f"$\\sigma$={stds[col]:.2f} min", 
+                        transform=ax.transAxes,fontsize=8, color='0.3', va='bottom', ha='left')
+            else:
+                ax.text(0.05, 0.05, f"$\\sigma$={stds[col]:.2f} min, $\\chi^2_\\mathrm{{red}}$={red_chi2[col]:.2f}", 
+                        transform=ax.transAxes,fontsize=8, color='0.3', va='bottom', ha='left')
+            ax.grid(alpha=0.3)
+
+            if row == 0:
+                ax.set_title(method, fontsize=11)
+            if col == 0:
+                ax.set_ylabel(f"{label}\nO - C (minutes)", fontsize=10)
+            if best_index is not None and col == best_index:
+                for spine in ax.spines.values():
+                    spine.set_edgecolor('red')
+                    spine.set_linewidth(1.8)
+
+    fig.supxlabel("Time - 2457000 [BTJD days]", fontsize=12)
+    fig.suptitle(f"TIC {tic_id[4:]} — eclipse-timing method comparison", fontsize=13)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+    out_dir = config.fig_path(config.FIG_METHODCOMP_DIR)
+    os.makedirs(out_dir, exist_ok=True)
+    fig.savefig(os.path.join(out_dir, f'TIC{tic_id[4:]}_method_comparison.png'), dpi=250)
+    plt.close(fig)
+    print(f"Saved method comparison figure to {os.path.join(out_dir, f'TIC{tic_id[4:]}_method_comparison.png')}")
 
 
 def save_all_sectors_multipage_pdf(tic_id):
@@ -292,7 +367,7 @@ def save_epoch_fits_pdf(tic_id, P, epoch_fits, ecl_type, method, extra_t0s=None)
             if (len(extra_t0s[k][0]) == n_epochs) and (len(extra_t0s[k][1]) == n_epochs):
                 xt0s[k] = extra_t0s[k]
             else:
-                print(f"Warning: extra_t0s[{k}] has length {len(extra_t0s[k][0])}, expected {n_epochs}. Not plotting t0s of this method.")
+                print(f"Warning: extra_t0s[{k}] has length {len(extra_t0s[k][0])}, expected {n_epochs} epochs. Not plotting t0s of this method.")
 
     with PdfPages(pdf_path) as pdf:
         for page in range(n_pages):
@@ -305,10 +380,11 @@ def save_epoch_fits_pdf(tic_id, P, epoch_fits, ecl_type, method, extra_t0s=None)
 
             for i, (times, fluxes, model_time, model_flux, t0_fit, t0_err) in enumerate(epoch_fits[start:end]):
                 ax = axes[i]
-                ax_title = f'{method}_t0={t0_fit:.4f}(+/-{t0_err*24*60:.1f}mins)'
+                ax_title = f'{method}_t0={t0_fit:.4f}(+/-{t0_err*24*60:.1f}mins)' if t0_fit is not None else ''
                 ax.plot(times, fluxes, 'k.', ms=3, alpha=0.6, label='Data')
                 ax.plot(model_time, model_flux, 'r-', lw=1.5, label='Model')
-                ax.axvline(t0_fit, color='c', lw=0.8, ls='-', label=method)
+                if t0_fit is not None:
+                    ax.axvline(t0_fit, color='c', lw=0.8, ls='-', label=method)
 
                 for j, k in enumerate(xt0s):
                     ax.axvline(xt0s[k][0][start + i], color=cols[j], lw=0.8, ls=lin_sty[j], label=k)
@@ -336,20 +412,35 @@ def save_epoch_fits_pdf(tic_id, P, epoch_fits, ecl_type, method, extra_t0s=None)
     print(f"\tSaved epoch fits to {pdf_path}")
 
 
-def plot_shape_variation(tic_id, indv_shape_params, global_shape_params, eclipse_type):
-    """Plot the variation of eclipse shape parameters (W, D, b) across eclipses.
+def plot_shape_variation(tic_id, pri_shape_params, pri_global_shape_params,
+                         sec_shape_params, sec_global_shape_params):
+    """Save primary and secondary eclipse-shape variations as a two-page PDF.
 
     Parameters
     ----------
     tic_id : str
         TIC ID of the target.
-    indv_shape_params : dict
-        Individual eclipse shape parameters (W, D, b) for each eclipse.
-    global_shape_params : dict
-        Global shape parameters (W, D, b) for the entire light curve.
-    eclipse_type : str
-        Type of eclipse ('pri' or 'sec') for labeling the plots.
+    pri_shape_params, sec_shape_params : dict
+        Individual primary and secondary eclipse shape parameters (W, D, b).
+    pri_global_shape_params, sec_global_shape_params : dict
+        Pooled primary and secondary eclipse shape parameters (W, D, b).
     """
+    out_dir = config.fig_path(config.FIG_VARIATION_DIR)
+    os.makedirs(out_dir, exist_ok=True)
+    pdf_path = os.path.join(out_dir, f'TIC{tic_id[4:]}_shape_variation.pdf')
+
+    with PdfPages(pdf_path) as pdf:
+        _plot_shape_variation_page(
+            pri_shape_params, pri_global_shape_params, 'pri', pdf,
+        )
+        _plot_shape_variation_page(
+            sec_shape_params, sec_global_shape_params, 'sec', pdf,
+        )
+
+
+def _plot_shape_variation_page(indv_shape_params, global_shape_params,
+                               eclipse_type, pdf):
+    """Add one eclipse-type shape-variation figure to an open PDF."""
     W, W_all = indv_shape_params['W'], global_shape_params['W']
     D, D_all = indv_shape_params['D'], global_shape_params['D']
     b, b_all = indv_shape_params['b'], global_shape_params['b']
@@ -378,8 +469,5 @@ def plot_shape_variation(tic_id, indv_shape_params, global_shape_params, eclipse
     ax[2].set_ylabel("Impact parameter")
     ax[2].grid(True)
 
-    out_dir = config.fig_path(config.FIG_VARIATION_DIR)
-    os.makedirs(out_dir, exist_ok=True)
-    fig.savefig(os.path.join(out_dir, f'TIC{tic_id[4:]}_variation_{eclipse_type}.png'), dpi=150, bbox_inches='tight')
+    pdf.savefig(fig, bbox_inches='tight')
     plt.close(fig)
-    return
