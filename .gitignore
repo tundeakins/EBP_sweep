@@ -27,3 +27,6 @@ Data/
 *.png
 *.jpg
 *.jpeg
+*.pkl
+Fig*
+ebpsweep.ipynb

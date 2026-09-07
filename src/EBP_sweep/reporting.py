@@ -90,7 +90,7 @@ def make_pdf(tic_id, P_primary, primP_err, P_secondary, secP_err, flat_lc, prima
     pdf.image(panel_plot, x=5, y=140, w=200)
 
     # Save Info to CSV
-    os.makedirs(config.DATA_DIR, exist_ok=True)
+    os.makedirs(config.data_path(), exist_ok=True)
     with open(config.data_path(config.GOOD_PERIODS_LOG), 'a', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([tic_id, P_primary, primP_err, P_secondary, secP_err, per_diff])
@@ -113,9 +113,10 @@ def create_DV_summary_pdf(tic_id,
         try:
             make_pdf(tic_id, P_pri_new, primP_err, P_sec_new, secP_err,
                      flat_lc, primary_method, secondary_method, pri_std, sec_std)
+            print(f"create_DV_summary_pdf: Successfully created PDF for {tic_id}")
             break  # success
         except Exception as e:
-            print(f"Attempt {attempt + 1} failed for {tic_id}: {e}")
+            print(f"create_DV_summary_pdf: Attempt {attempt + 1} failed for {tic_id}: {e}")
             if attempt == 2:
-                print(f"Failed to create PDF for TIC {tic_id} after 3 attempts.")
+                print(f"create_DV_summary_pdf: Failed to create PDF for {tic_id} after 3 attempts.")
     # make_pdf(tic_id, P_pri_new, primP_err, P_sec_new, secP_err, flat_lc, primary_method, secondary_method, pri_std, sec_std)

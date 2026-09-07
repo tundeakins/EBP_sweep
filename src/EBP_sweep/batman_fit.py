@@ -19,7 +19,7 @@ from uncertainties import ufloat, unumpy as unp
 
 from . import config
 from .plotting import save_epoch_fits_pdf
-from .utils import get_lc_noise_level
+from .utils import get_lc_noise_level, red_noise_beta_factor, phase_fold
 
 
 def Tdur_to_aR(Tdur, b, Rp, P, e=0, w=90, tra_occ="tra"):
@@ -175,22 +175,36 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 			raise ValueError(f"Invalid prior specification for parameter '{key}': {v}")
 
 	result = minimize(residual, params, args=(model, pooled_times, pooled_fluxes, pooled_fluxerrs),
-					   method='leastsq', nan_policy='propagate')
+					   method='leastsq', nan_policy='omit')
 	if verbose: print(f"\tGLOBAL FIT: {result.message}")
 
 	# Cycle through parameters, fixing one at a time, resetting each before trying the next
-	if 'Could not estimate error-bars' in result.message:
+	if 'Could not estimate error-bars' in result.message or 'variable did not affect the fit' in result.message:
 		for p in ['P', 'Aev', 'b']:
 			if verbose: print(f"\tRetrying with {p} fixed to {params[p].value:.7f}...")
 			params[p].vary = False
 			result = minimize(residual, params, args=(model, pooled_times, pooled_fluxes, pooled_fluxerrs),
-								method='leastsq', nan_policy='propagate')
+								method='leastsq', nan_policy='omit')
 			if verbose: print(f"\tGLOBAL FIT ({p} fixed): {result.message}")
 			params[p].vary = True  # reset before trying next parameter
-			if 'Could not estimate error-bars' not in result.message:
+			if 'Could not estimate error-bars' not in result.message and 'variable did not affect the fit' not in result.message:
 				break
 
 	result_values = {k: result.params[k].value for k in ('t0', 'P', 'rp', 'dur', 'b', 'u1', 'u2', 'Aev', 'offset', 'slope')}
+
+	# Inflate formal (white-noise-only) uncertainties for time-correlated ("red")
+	# noise in the residuals -- see fit_epoch_t0 for why this is a post-hoc multiply
+	# rather than a refit with inflated flux errors. `pooled_times` jumps between
+	# widely-separated eclipse epochs, so beta is estimated within each contiguous
+	# epoch window rather than across the gaps between them.
+	pooled_phases = phase_fold(pooled_times, result_values['P'], result_values['t0'], phase0=-0.35)
+	in_eclipse_mask = abs(pooled_phases) < 0.5*result_values["dur"]/result_values["P"]
+	bestfit_flux_at_data = batman_flux_model(model, result_values)
+	beta = red_noise_beta_factor(pooled_fluxes[in_eclipse_mask] - bestfit_flux_at_data[in_eclipse_mask], time=pooled_times[in_eclipse_mask])
+	for pname in result.params:
+		if result.params[pname].vary and result.params[pname].stderr:
+			result.params[pname].stderr *= beta
+
 	P_bat = ufloat(result.params['P'].value, result.params['P'].stderr) if result.params['P'].stderr is not None else result.params['P'].value
 
 	# Plotting the best-fit model for tess_data against the pooled data for each sector
@@ -198,7 +212,7 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 		n_sectors = len(np.unique(pooled_sectors)) if pooled_sectors is not None else 1
 		n_cols = 2 if n_sectors > 1 else 1
 		n_rows = (n_sectors + n_cols - 1) // n_cols
-		fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4 * n_rows), sharex=False, sharey=False)
+		fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4 * n_rows), sharex=False, sharey=True)
 		axes = np.atleast_2d(axes).flatten()  # Flatten to 1D for easy indexing
 
 		for idx, sector in enumerate(np.unique(pooled_sectors)):
@@ -269,22 +283,38 @@ def fit_epoch_t0(local_times, local_fluxes, local_fluxerrs, T_pred, period, shap
 	# varying
 	params.add('t0', value=T_pred, min=T_pred - shift_limit, max=T_pred + shift_limit)
 	params.add('offset', value=prior['offset'].value)
-	params.add('slope', value=prior['slope'].value, min=-0.1, max=0.1)
+	params.add('slope', value=0, min=-1, max=1)
 	# gaussian prior with mean and 5*stddev from the global fit
-	params.add('rp', value=prior['rp'].value, user_data=(prior['rp'].value, 5 * prior['rp'].stderr))
-	params.add('dur', value=prior['dur'].value, user_data=(prior['dur'].value, 5 * prior['dur'].stderr))
-	params.add('Aev', value=prior['Aev'].value, user_data=(prior['Aev'].value, 5 * prior['Aev'].stderr),
-				vary=prior['Aev'].stderr not in [None, 0])
-	params.add('b', value=prior['b'].value, min=0, max=1.8, vary=prior['b'].stderr not in [None, 0])
-	# fixed
-	params.add('P', value=prior['P'].value, vary=False)
-	params.add('u1', value=prior['u1'].value, vary=False)
-	params.add('u2', value=prior['u2'].value, vary=False)
+	params.add('rp', value=prior['rp'].value, 
+			user_data=(prior['rp'].value, 5 * prior['rp'].stderr))
+	params.add('Aev', value=prior['Aev'].value, vary=prior['Aev'].stderr not in [None, 0],
+			user_data=(prior['Aev'].value, 5 * prior['Aev'].stderr) if prior['Aev'].stderr not in [None, 0] else None)
+	params.add('dur', value=prior['dur'].value, 
+			user_data=(prior['dur'].value, 3 * prior['dur'].stderr))
+	params.add('b', value=prior['b'].value, min=0, max=1.8, vary=prior['b'].stderr not in [None, 0],
+			user_data=(prior['b'].value, 3*prior['b'].stderr) if prior['b'].stderr not in [None, 0] else None)
 
-	minner = Minimizer(residual, params, fcn_args=(model, local_times, local_fluxes, local_fluxerrs))
-	result = minner.minimize(method='leastsq')
+	params.add('P', value=prior['P'].value, vary=False)
+	params.add('u1', value=prior['u1'].value, vary=exp_time*24*60 <= 5, min=0, max=2,  #vary u1 if sampling is fine enough
+			user_data=(prior['u1'].value, 1 * prior['u1'].stderr) if exp_time*24*60 <= 5 else None)
+	params.add('u2', value=prior['u2'].value, vary=exp_time*24*60 <= 5, min=-1, max=1,  #vary if sampling is fine enough
+			user_data=(prior['u2'].value, 1 * prior['u2'].stderr) if exp_time*24*60 <= 5 else None)
+
+	result = minimize(residual, params, args=(model, local_times, local_fluxes, local_fluxerrs),
+					   method='leastsq', nan_policy='omit')
 
 	result_values = {k: result.params[k].value for k in ('t0', 'P', 'rp', 'dur', 'b', 'u1', 'u2', 'Aev', 'offset', 'slope')}
+
+	# Inflate formal (white-noise-only) uncertainties for time-correlated ("red")
+	# noise in the residuals, which the independent-point leastsq covariance
+	# doesn't account for and which otherwise leaves stderr, t0.stderr included,
+	# systematically underestimated.
+	in_eclipse_mask = abs(local_times - result_values['t0']) < 0.5*result_values["dur"]
+	bestfit_flux_at_data = batman_flux_model(model, result_values)
+	beta = red_noise_beta_factor(local_fluxes[in_eclipse_mask] - bestfit_flux_at_data[in_eclipse_mask], time=local_times[in_eclipse_mask])
+	for pname in result.params:
+		if result.params[pname].vary and result.params[pname].stderr:
+			result.params[pname].stderr *= beta
 	smooth_time = np.linspace(result_values['t0'] - 0.2 * result_values['P'], result_values['t0'] + 0.2 * result_values['P'], int(0.4 * result_values['P'] * 24 * 60))
 	bestfit_model = batman_flux_model(model, result_values, t=smooth_time)
 
@@ -321,7 +351,7 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 	"""
 
 	if np.all(np.isnan(pdgrm_results.transit_times)):
-		return 0, 0
+		return 0, 0, 0, 0, None
 
 	local_times_arrays = []
 	local_fluxes_arrays = []
@@ -332,6 +362,8 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 	for T_pred in pdgrm_results.transit_times:
 
 		mask = abs(eclipse_lc.time.value - T_pred) <= eclipse_cut * P
+		if not np.any(mask):
+			continue
 		local_exptime = mode(np.diff(eclipse_lc.time.value[mask])).mode
 		local_expected_npts = 2 * eclipse_cut * P / local_exptime
 		mask_left = eclipse_lc.time.value[mask] < T_pred
@@ -340,23 +372,25 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 		ingress_coverage = np.sum(mask_left) / local_expected_npts
 		egress_coverage = np.sum(mask_right) / local_expected_npts
 
-		if (np.sum(mask_left) > 1) & (np.sum(mask_right) > 1) & (ingress_coverage >= 0.1) & (egress_coverage >= 0.1):
+		if (np.sum(mask_left) > 1) & (np.sum(mask_right) > 1) & (ingress_coverage >= 0.10) & (egress_coverage >= 0.10):
 
 			local_times = eclipse_lc.time.value[mask]
 			local_fluxes = eclipse_lc.flux.value[mask]
-			local_fluxerrs = eclipse_lc.flux_err.value[mask]
+			# local_fluxerrs = eclipse_lc.flux_err.value[mask]
+			local_fluxerrs = np.ones_like(local_fluxes) * get_lc_noise_level(local_fluxes)
 			local_sector = eclipse_lc.sector[mask]
 			if np.all(np.isnan(local_fluxes)):
 				continue
 
-			local_times_arrays.append(local_times)
-			local_fluxes_arrays.append(local_fluxes)
-			local_fluxerrs_arrays.append(np.ones_like(local_fluxes) * get_lc_noise_level(local_fluxes))
-			local_sector_arrays.append(local_sector)
+			gd_pts = np.isfinite(local_fluxes)
+			local_times_arrays.append(local_times[gd_pts])
+			local_fluxes_arrays.append(local_fluxes[gd_pts])
+			local_fluxerrs_arrays.append(local_fluxerrs[gd_pts])
+			local_sector_arrays.append(local_sector[gd_pts])
 			valid_T_preds.append(T_pred)
 
 	if len(local_times_arrays) < 2:
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, None
 
 	pooled_times = np.concatenate(local_times_arrays)
 	pooled_fluxes = np.concatenate(local_fluxes_arrays)
@@ -369,26 +403,26 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 	dur = getattr(pdgrm_results, 'duration', 0.1 * P)
 	t0 = pdgrm_results.T0
 	try:
-		param_priors = dict(t0=(t0 - 0.1, t0, t0 + 0.1),
-							P=(P - 0.1, P, P + 0.1),
-							rp=(0.5 * rp, rp, 1.5 * rp),
-							dur=(min(0.01 * P, 0.9 * dur), dur, 0.3 * P),
-							b=(0, 0.1, 1.8),
-							u1=(0, 0.3, 2),
-							u2=(-1, 0.2, 1),
-							Aev=(-0.1, 0, 0.1),
-							offset=(-0.1, 0, 0.1),
-							slope=(-0.1, 0, 0.1)
+		param_priors = dict(t0	= (t0 - 0.15*P, t0, t0 + 0.15*P),
+							P	= (P - 0.1, P, P + 0.1),
+							rp	= (0.5 * rp, rp, 1.5 * rp),
+							dur	= (min(0.01 * P, 0.9 * dur), dur, 0.3 * P),
+							b	= (0, 0.1, 1.8),
+							u1	= (0, 0.3, 2),
+							u2	= (-1, 0.2, 1),
+							Aev	= (-0.1, 0, 0.1),
+							offset	= (-0.1, 0, 0.1),
+							slope	= (-0.1, 0, 0.1)
 							)
 
 		shape_params = fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, pooled_sectors,
 												param_priors, tic_id, ecl_type)
+
 		# save eclipse params to csv in out_dir
+		shape_params_df = pd.DataFrame({f'{k}_{ecl_type}': [v.value, v.stderr, (v.min,v.max)] for k, v in shape_params.items()}, index=['value', 'stderr', 'bounds']).T
+
 		out_dir = config.fig_path(os.path.join(config.FIG_ECLIPSEFIT_DIR, f'TIC{tic_id[4:]}'))
 		os.makedirs(out_dir, exist_ok=True)
-
-		shape_params_df = pd.DataFrame({f'{k}_{ecl_type}': [v.value, v.stderr, (v.min,v.max)] for k, v in shape_params.items()}, index=['value', 'stderr', 'bounds']).T
-		# append to csv if file already exists
 		csv_path = os.path.join(out_dir, f'TIC{tic_id[4:]}_GlobalParams.csv')
 		if ecl_type == 'pri':
 			shape_params_df.to_csv(csv_path)
@@ -401,8 +435,8 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 
 	observed_eclipse_times_batman = []
 	observed_eclipse_time_errs_batman = []
-	shift_limit = 0.05 * P
-	epoch_fits = []  # (times, fluxes, model_flux, t0_fit, t0_err)
+	shift_limit = 0.15 * P
+	epoch_fits = []  # (times, fluxes, model_times, model_flux, t0_fit, t0_err)
 	global_shape_params = dict(	W=ufloat(shape_params['dur'].value, shape_params['dur'].stderr),
 								D=ufloat(shape_params['rp'].value, shape_params['rp'].stderr) ** 2,
 								b=ufloat(shape_params['b'].value, shape_params['b'].stderr) if shape_params['b'].stderr not in [0, None] else ufloat(shape_params['b'].value, 0),
@@ -411,8 +445,18 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 
 	indv_shape_params = dict(W=[], D=[], b=[])
 
-	print(f"\tFitting {len(valid_T_preds)} individual eclipses")
+	print(f"\tFitting {len(valid_T_preds)} individual eclipses.", end=" ")
+	valid_batman_Tpreds = []
 	for T_pred, local_times, local_fluxes, local_fluxerrs in zip(valid_T_preds, local_times_arrays, local_fluxes_arrays, local_fluxerrs_arrays):
+		# now with eclipse width known, discard any predicted eclipse without enough data points
+		mask = abs(local_times - T_pred) < 0.6*shape_params['dur'].value #points in eclipse
+		local_exptime = mode(np.diff(local_times)).mode
+		local_expected_npts = np.round(shape_params['dur'].value / local_exptime)
+		mask_left = local_times[mask] < T_pred
+		mask_right = local_times[mask] > T_pred
+		if sum(mask_left) < int(0.1*local_expected_npts) or sum(mask_right) < int(0.1*local_expected_npts):  # require at least 10% of expected points on each side of eclipse
+			continue
+
 		try:
 			result, bestfit_time, bestfit_model = fit_epoch_t0(local_times, local_fluxes, local_fluxerrs, T_pred, P, shape_params, shift_limit)
 			fit_params = result.params
@@ -423,19 +467,23 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 			indv_shape_params['b'].append(ufloat(fit_params['b'].value, fit_params['b'].stderr))
 			if t0_err is None:
 				raise ValueError("no stderr")
-			epoch_fits.append((local_times, local_fluxes, bestfit_time, bestfit_model, t0_fit, t0_err))
 		except Exception:
 			t0_fit = np.nan
 			t0_err = np.nan
-			epoch_fits.append((local_times, local_fluxes, np.full_like(local_fluxes, np.nan), np.full_like(local_fluxes, np.nan), t0_fit, t0_err))
+			bestfit_time = np.full_like(local_fluxes, np.nan)
+			bestfit_model = np.full_like(local_fluxes, np.nan)
 
-		if np.isfinite(t0_err):
+		if np.isfinite(t0_err):# and t0_err < 30/(24*60):  # only consider eclipse times with errors less than 30 minutes
 			observed_eclipse_times_batman.append(np.float64(t0_fit))
 			observed_eclipse_time_errs_batman.append(np.float64(t0_err))
+			valid_batman_Tpreds.append(t0_fit)
+			epoch_fits.append((local_times, local_fluxes, bestfit_time, bestfit_model, t0_fit, t0_err))
 
+
+	print(f"{len(valid_batman_Tpreds)} with sufficient datapoints")
 	if len(observed_eclipse_times_batman) < 2:
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, None
 
 	save_epoch_fits_pdf(tic_id, P, epoch_fits, ecl_type, 'batman')
 
-	return observed_eclipse_times_batman, np.array(observed_eclipse_time_errs_batman), indv_shape_params, global_shape_params
+	return observed_eclipse_times_batman, np.array(observed_eclipse_time_errs_batman), indv_shape_params, global_shape_params, valid_batman_Tpreds

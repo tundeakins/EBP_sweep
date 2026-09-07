@@ -111,7 +111,7 @@ def flatten_tess_by_sector(lc, P, T0):
     for sector in unique_sectors:
         sector_lc = lc[lc.sector == sector]
 
-        if len(sector_lc.flux.value) < 3 or np.all(np.isnan(sector_lc.flux.value)) or ((sector_lc.time.value[-1] - sector_lc.time.value[0]) < 0.5 * P):
+        if len(sector_lc.flux.value) < 3 or np.all(np.isnan(sector_lc.flux.value)):# or (np.ptp(sector_lc.time.value) < 0.5 * P):
             continue
 
         else:
@@ -444,7 +444,7 @@ def find_orbital_period(tic_id, good_lc, flux_threshold=None, verbose=True):
 
     if P_correct < 3:
         # Flag short-period binaries for manual inspection
-        os.makedirs(config.DATA_DIR, exist_ok=True)
+        os.makedirs(config.data_path(), exist_ok=True)
         with open(config.data_path(config.SHORTPERIOD_TICIDS_LOG), 'a', newline='') as f:
             csv.writer(f).writerow([tic_id, P_correct])
         return None, None

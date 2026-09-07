@@ -109,13 +109,14 @@ See [`examples/`](examples/) for batch runs and a check against literature perio
 
 ## Output
 
-Each run writes diagnostic plots under `./Figures/` and CSV/PDF outputs
-under `./Data/`, relative to the current working directory. Targets that
-fail at some stage (too few eclipses detected, ambiguous period, no data
-available, ...) are logged to a CSV file under `./Data/` instead of raising,
-so batch runs can continue past individual failures. Override
-`EBP_sweep.config.FIGURES_DIR` / `EBP_sweep.config.DATA_DIR` before running
-a pipeline to write elsewhere.
+Each run writes diagnostic plots under `./Figures/`, CSV/PDF outputs under
+`./Data/`, and saved `.pkl` targets under `./saved_pkl/`, relative to the
+current working directory. Targets that fail at some stage (too few
+eclipses detected, ambiguous period, no data available, ...) are logged to
+`./Data/errors.csv` instead of raising, so batch runs can continue past
+individual failures. Set `EBP_sweep.config.OUTPUT_DIR` before running a
+pipeline to send everything from one run into its own folder, e.g.
+`config.OUTPUT_DIR = "runs/2026-09-04"`.
 
 ## Package layout
 

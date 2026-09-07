@@ -21,7 +21,7 @@ from scipy.stats import mode
 
 from . import config
 from .batman_fit import get_batman_eclipse_times
-from .plotting import save_epoch_fits_pdf, plot_shape_variation
+from .plotting import save_epoch_fits_pdf, plot_shape_variation, plot_method_comparison
 from .utils import estimate_time_uncertainty, find_nearest, get_lc_noise_level, select_best_index
 
 
@@ -83,12 +83,13 @@ def get_t0_err_shift(local_times, local_fluxes, local_fluxerrs, T_pred, P, splin
     params = Parameters()
     params.add('shift', value=best_shift, min=-shift_limit, max=shift_limit)
 
-    minner = Minimizer(shift_residuals, params, fcn_args=(local_times, local_fluxes, local_fluxerrs, T_pred, P, spline, shift_limit, ingress_shift))
+    minner = Minimizer(shift_residuals, params, fcn_args=(local_times, local_fluxes, local_fluxerrs, T_pred, P, spline, shift_limit, ingress_shift),
+                       nan_policy='omit')
 
     result = minner.minimize(method='leastsq')
-    best_t0_err = result.params['shift'].stderr
+    best_t0_err = result.params['shift'].stderr 
 
-    return best_t0_err
+    return min(best_t0_err, shift_limit)
 
 
 def fold_residuals(params, time, flux, fluxerr_value):
@@ -139,7 +140,7 @@ def fold_residuals(params, time, flux, fluxerr_value):
 
 
 def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
-                       methods=['hd', 'fold', 'cc', 'gress']):
+                       batman_Tpreds=None, methods=['hd', 'fold', 'cc', 'gress']):
     """
     Estimate eclipse times using various methods.
 
@@ -165,30 +166,25 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
     tuple
         Four lists containing the observed eclipse times using different methods.
     """
-
-    observed_eclipse_times_halfdepth = []
-    observed_eclipse_times_folding = []
-    observed_eclipse_times_cc = []
-    observed_eclipse_times_gress = []
-
-    observed_eclipse_time_errs_hd = []
-    observed_eclipse_time_errs_fold = []
-    observed_eclipse_time_errs_cc = []
-    observed_eclipse_time_errs_gress = []
+    observed_eclipse_times = {'hd': [], 'fold': [], 'cc': [], 'gress': []}
+    observed_eclipse_time_errs = {'hd': [], 'fold': [], 'cc': [], 'gress': []}
 
     local_times_arrays = []
     local_fluxes_arrays = []
     local_fluxerrs_arrays = []
 
-    if np.all(np.isnan(pdgrm_results.transit_times)):
+    eclipse_test_times = batman_Tpreds if batman_Tpreds is not None else pdgrm_results.transit_times
+
+    if np.all(np.isnan( eclipse_test_times)):
         config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
         return 0, 0, 0, 0
     epoch_fits_hd = []
+    epoch_fits_cc = []
     valid_T_preds = []
 
     if 'hd' in methods or 'fold' in methods:
         print(f"Getting {ecl_type} eclipse times using half-depth and folding methods ...")
-        for T_pred in pdgrm_results.transit_times:
+        for T_pred in eclipse_test_times:
             mask = abs(eclipse_lc.time.value - T_pred) <= 0.1 * P
             local_exptime = mode(np.diff(eclipse_lc.time.value[mask])).mode
             local_expected_npts = 0.2 * P / local_exptime
@@ -226,76 +222,79 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
                 half_index_egress, half_time_egress, half_flux_egress = find_nearest(egress_times, egress_fluxes, half_depth)
 
                 mid_eclipse = (half_time_ingress + half_time_egress) / 2
-                observed_eclipse_times_halfdepth.append(mid_eclipse)
+                observed_eclipse_times['hd'].append(mid_eclipse)
 
                 # Get HD Uncert
+                if 'hd' in methods:
+                    try:
+                        ingress_flux_err = np.ones_like(ingress_fluxes) * get_lc_noise_level(local_fluxes)
+                        t_ingress_err = estimate_time_uncertainty(ingress_times, ingress_fluxes, ingress_flux_err, half_depth)
 
-                try:
-                    ingress_flux_err = np.ones_like(ingress_fluxes) * get_lc_noise_level(local_fluxes)
-                    t_ingress_err = estimate_time_uncertainty(ingress_times, ingress_fluxes, ingress_flux_err, half_depth)
+                        egress_flux_err = np.ones_like(egress_fluxes) * get_lc_noise_level(local_fluxes)
+                        t_egress_err = estimate_time_uncertainty(egress_times, egress_fluxes, egress_flux_err, half_depth)
 
-                    egress_flux_err = np.ones_like(egress_fluxes) * get_lc_noise_level(local_fluxes)
-                    t_egress_err = estimate_time_uncertainty(egress_times, egress_fluxes, egress_flux_err, half_depth)
+                        mid_eclipse_time_err = 0.5 * np.sqrt(t_ingress_err**2 + t_egress_err**2)
+                        observed_eclipse_time_errs['hd'].append(mid_eclipse_time_err)
 
-                    mid_eclipse_time_err = 0.5 * np.sqrt(t_ingress_err**2 + t_egress_err**2)
-                    observed_eclipse_time_errs_hd.append(mid_eclipse_time_err)
+                    except Exception:
+                        mid_eclipse_time_err = (5 / (24 * 60))  # set to 5minutes
+                        observed_eclipse_time_errs['hd'].append(mid_eclipse_time_err)
 
-                except Exception:
-                    mid_eclipse_time_err = (3 / (24 * 60))  # set to 3minutes
-                    observed_eclipse_time_errs_hd.append(mid_eclipse_time_err)
-
-                epoch_fits_hd.append((local_times, local_fluxes, new_times, new_fluxes, mid_eclipse, mid_eclipse_time_err))
+                epoch_fits_hd.append((local_times, local_fluxes, new_times, new_fluxes, 
+                                        mid_eclipse if 'hd' in methods else None, 
+                                        mid_eclipse_time_err if 'hd' in methods else None))
 
                 # Folding Method
-                shift_limit = 0.05
-                t_min, t_max = T_pred - shift_limit, T_pred + shift_limit
-                num_trials = 1000
-                candidate_midpoints = np.linspace(t_min, t_max, num_trials)
+                if 'fold' in methods:
+                    shift_limit = 0.05
+                    t_min, t_max = T_pred - shift_limit, T_pred + shift_limit
+                    num_trials = 1000
+                    candidate_midpoints = np.linspace(t_min, t_max, num_trials)
 
-                best_error = np.inf
+                    best_error = np.inf
 
-                for t0 in candidate_midpoints:
+                    for t0 in candidate_midpoints:
 
-                    delta_t = new_times - t0
+                        delta_t = new_times - t0
 
-                    mask_pos = delta_t >= 0
-                    mask_neg = delta_t <= 0
+                        mask_pos = delta_t >= 0
+                        mask_neg = delta_t <= 0
 
-                    t_pos = delta_t[mask_pos]
-                    t_neg = -delta_t[mask_neg]  # flip to positive
-                    f_pos = new_fluxes[mask_pos]
-                    f_neg = new_fluxes[mask_neg]
+                        t_pos = delta_t[mask_pos]
+                        t_neg = -delta_t[mask_neg]  # flip to positive
+                        f_pos = new_fluxes[mask_pos]
+                        f_neg = new_fluxes[mask_neg]
 
-                    # Interpolate the negative side onto positive side
-                    if len(t_neg) > 0:
-                        interp_model = interp1d(t_neg, f_neg, bounds_error=False, fill_value='extrapolate')
-                        f_neg_interp = interp_model(t_pos)
-                    else:
-                        continue
+                        # Interpolate the negative side onto positive side
+                        if len(t_neg) > 0:
+                            interp_model = interp1d(t_neg, f_neg, bounds_error=False, fill_value='extrapolate')
+                            f_neg_interp = interp_model(t_pos)
+                        else:
+                            continue
 
-                    error = np.nanmean((f_pos - f_neg_interp)**2)
+                        error = np.nanmean((f_pos - f_neg_interp)**2)
 
-                    if error < best_error:
-                        best_error = error
-                        best_midpoint = t0
+                        if error < best_error:
+                            best_error = error
+                            best_midpoint = t0
 
-                observed_eclipse_times_folding.append(best_midpoint)
+                    observed_eclipse_times['fold'].append(best_midpoint)
 
-                # Get Folding Uncert
-                try:
+                    # Get Folding Uncert
+                    try:
 
-                    params = Parameters()
-                    params.add('t0', value=best_midpoint, min=T_pred - shift_limit, max=T_pred + shift_limit)
+                        params = Parameters()
+                        params.add('t0', value=best_midpoint, min=T_pred - shift_limit, max=T_pred + shift_limit)
 
-                    minner = Minimizer(fold_residuals, params, fcn_args=(new_times, new_fluxes, get_lc_noise_level(local_fluxes)))
+                        minner = Minimizer(fold_residuals, params, fcn_args=(new_times, new_fluxes, get_lc_noise_level(local_fluxes)),nan_policy='omit')
 
-                    result = minner.minimize(method='leastsq')
-                    best_t0_err = result.params['t0'].stderr
+                        result = minner.minimize(method='leastsq')
+                        best_t0_err = result.params['t0'].stderr
 
-                    observed_eclipse_time_errs_fold.append(best_t0_err)
+                        observed_eclipse_time_errs['fold'].append(best_t0_err)
 
-                except Exception:
-                    observed_eclipse_time_errs_fold.append((3 / (24 * 60)))  # set to 3minutes
+                    except Exception:
+                        observed_eclipse_time_errs['fold'].append((5 / (24 * 60)))  # set to 3minutes
 
                 local_times_arrays.append(local_times)
                 local_fluxes_arrays.append(local_fluxes)
@@ -303,7 +302,9 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
 
         print(f"\tSaving {len(valid_T_preds)} {ecl_type} eclipse times for half-depth and folding methods to pdf ...")
         save_epoch_fits_pdf(tic_id, P, epoch_fits_hd, ecl_type, 'half_depth',
-                             extra_t0s=dict(folding=[observed_eclipse_times_folding, observed_eclipse_time_errs_fold]))
+                            extra_t0s=dict(folding=[observed_eclipse_times['fold'], 
+                                                    observed_eclipse_time_errs['fold']]) if 'fold' in methods else None
+                            )
 
         eclipse_lc_time = np.concatenate((local_times_arrays))
         eclipse_lc_flux = np.concatenate((local_fluxes_arrays))
@@ -311,7 +312,7 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
 
     # Cross Correlating Method
     if 'cc' in methods or 'gress' in methods:
-        print(f"Getting {ecl_type} eclipse times using Cross-Correlation and Ingress/Egress methods ...")
+        print(f"Getting {ecl_type} eclipse times using Cross-Correlation and/or Ingress/Egress methods ...")
 
         eclipse_lc_phase = ((eclipse_lc_time - pdgrm_results.T0) / P - 0.5) % 1  # Phased around 0.5
         phases_sorted = eclipse_lc_phase[np.argsort(eclipse_lc_phase)]
@@ -390,7 +391,7 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
         dt2_egress = unphased_eclipse_lc[egress_outer_index]
         valid_T_preds = []
 
-        for T_pred in pdgrm_results.transit_times:  # Using predicted eclipse times from TLS as a starting point
+        for T_pred in eclipse_test_times:  # Using predicted eclipse times from TLS or Batman as a starting point
 
             mask = abs(eclipse_lc.time.value - T_pred) <= 0.1 * P
             local_exptime = mode(np.diff(eclipse_lc.time.value[mask])).mode
@@ -425,7 +426,7 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
                 if len(egress_times) < 1:
                     continue
 
-                shift_limit = 0.05
+                shift_limit = 0.15
                 num_trials = 1000
 
                 shifts = np.linspace(-shift_limit, shift_limit, num_trials)
@@ -440,7 +441,6 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
                 for shift in shifts:
 
                     # Cross Correlation
-
                     test_times = local_times - T_pred + (0.1 * P) - shift
                     cut_times = test_times[np.where((test_times > test_times[0] + shift_limit) & (test_times < test_times[-1] - shift_limit))]
                     cut_fluxes = local_fluxes[np.where((test_times > test_times[0] + shift_limit) & (test_times < test_times[-1] - shift_limit))]
@@ -472,57 +472,65 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
                     chi2s_egress.append(chi2_egress)
 
                 # CC
+                if 'cc' in methods:
+                    best_idx = np.argmin(chi2s)
+                    best_shift = shifts[best_idx]
+                    best_t0 = T_pred + best_shift
 
-                best_idx = np.argmin(chi2s)
-                best_shift = shifts[best_idx]
-                best_t0 = T_pred + best_shift
+                    observed_eclipse_times['cc'].append(best_t0)
 
-                observed_eclipse_times_cc.append(best_t0)
+                    # CC Uncertainty
 
-                # CC Uncertainty
+                    try:
+                        local_fluxerrs = np.ones(len(local_fluxes)) * get_lc_noise_level(local_fluxes)
+                        best_t0_err = get_t0_err_shift(local_times, local_fluxes, local_fluxerrs, T_pred, P, spline, shift_limit, best_shift, 0, gress=False)
 
-                try:
+                        observed_eclipse_time_errs['cc'].append(best_t0_err)
 
-                    local_fluxerrs = np.ones(len(local_fluxes)) * get_lc_noise_level(local_fluxes)
-                    best_t0_err = get_t0_err_shift(local_times, local_fluxes, local_fluxerrs, T_pred, P, spline, shift_limit, best_shift, 0, gress=False)
+                    except Exception:
+                        observed_eclipse_time_errs['cc'].append((5 / (24 * 60)))
 
-                    observed_eclipse_time_errs_cc.append(best_t0_err)
-
-                except Exception:
-                    observed_eclipse_time_errs_cc.append((3 / (24 * 60)))
-
+                epoch_fits_cc.append((local_times, local_fluxes, cut_times, model_flux, 
+                                        best_t0 if 'cc' in methods else None, 
+                                        best_t0_err if 'cc' in methods else None))
                 # Ingress/Egress
+                if 'gress' in methods:
 
-                best_shift_ingress = shifts[np.argmin(chi2s_ingress)]
-                best_shift_egress = shifts[np.argmin(chi2s_egress)]
-                best_shift = (best_shift_ingress + best_shift_egress) / 2
-                best_t0 = T_pred + best_shift
+                    best_shift_ingress = shifts[np.argmin(chi2s_ingress)]
+                    best_shift_egress = shifts[np.argmin(chi2s_egress)]
+                    best_shift = (best_shift_ingress + best_shift_egress) / 2
+                    best_t0 = T_pred + best_shift
 
-                observed_eclipse_times_gress.append(best_t0)
+                    observed_eclipse_times['gress'].append(best_t0)
 
-                # Ingress Uncertainty
+                    # Ingress Uncertainty
 
-                try:
+                    try:
 
-                    local_fluxerrs = np.ones(len(ingress_fluxes)) * get_lc_noise_level(ingress_fluxes)
-                    best_t0_err_ingress = get_t0_err_shift(ingress_times, ingress_fluxes, local_fluxerrs, T_pred, P, ingress_spline, shift_limit, best_shift_ingress, center_offset, gress=True)
+                        local_fluxerrs = np.ones(len(ingress_fluxes)) * get_lc_noise_level(ingress_fluxes)
+                        best_t0_err_ingress = get_t0_err_shift(ingress_times, ingress_fluxes, local_fluxerrs, T_pred, P, ingress_spline, shift_limit, best_shift_ingress, center_offset, gress=True)
 
-                    # Egress Uncertainty
+                        # Egress Uncertainty
 
-                    local_fluxerrs = np.ones(len(egress_fluxes)) * get_lc_noise_level(egress_fluxes)
-                    best_t0_err_egress = get_t0_err_shift(egress_times, egress_fluxes, local_fluxerrs, T_pred, P, egress_spline, shift_limit, best_shift_egress, center_offset, gress=True)
+                        local_fluxerrs = np.ones(len(egress_fluxes)) * get_lc_noise_level(egress_fluxes)
+                        best_t0_err_egress = get_t0_err_shift(egress_times, egress_fluxes, local_fluxerrs, T_pred, P, egress_spline, shift_limit, best_shift_egress, center_offset, gress=True)
 
-                    best_t0_err = np.sqrt(best_t0_err_ingress**2 + best_t0_err_egress**2) / 2
+                        best_t0_err = np.sqrt(best_t0_err_ingress**2 + best_t0_err_egress**2) / 2
 
-                    observed_eclipse_time_errs_gress.append(best_t0_err)
-                except Exception:
-                    observed_eclipse_time_errs_gress.append((3 / (24 * 60)))
+                        observed_eclipse_time_errs['gress'].append(best_t0_err)
+                    except Exception:
+                        observed_eclipse_time_errs['gress'].append((5 / (24 * 60)))
 
                 valid_T_preds.append(T_pred)
         print(f"\tObtained {len(valid_T_preds)} {ecl_type} eclipse times for Cross-Correlation and Ingress/Egress methods...")
-
-    return observed_eclipse_times_halfdepth, observed_eclipse_times_folding, observed_eclipse_times_cc, observed_eclipse_times_gress, np.array(observed_eclipse_time_errs_hd), np.array(observed_eclipse_time_errs_fold), np.array(observed_eclipse_time_errs_cc), np.array(observed_eclipse_time_errs_gress)
-
+        save_epoch_fits_pdf(tic_id, P, epoch_fits_cc, ecl_type, 'CC',
+                            extra_t0s=dict(gress=[observed_eclipse_times['gress'], 
+                                                    observed_eclipse_time_errs['gress']]) if 'gress' in methods else None
+                            )
+        
+    # return observed_eclipse_times, observed_eclipse_times_folding, observed_eclipse_times_cc, observed_eclipse_times_gress, np.array(observed_eclipse_time_errs_hd), np.array(observed_eclipse_time_errs_fold), np.array(observed_eclipse_time_errs_cc), np.array(observed_eclipse_time_errs_gress)
+    observed_eclipse_time_errs = {key: np.array(observed_eclipse_time_errs[key]) for key in observed_eclipse_time_errs}
+    return observed_eclipse_times, observed_eclipse_time_errs
 
 def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fold', 'cc', 'gress', 'batman'],
                            return_global_eclipse_params=False,verbose=True):
@@ -571,6 +579,11 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
                 primary_errs, secondary_errs), methods_used
     or None on failure.
     """
+    pri_times = {}
+    sec_times = {}
+    pri_errs = {}
+    sec_errs = {}
+
     p = ecl_dict
     kwargs_pri = (tic_id, p['phased'], p['lc_nonsecondary'], p['P_primary'], p['results_primary'])
     kwargs_sec = (tic_id, p['phased'], p['lc_nonprimary'], p['P_secondary'], p['results_secondary'])
@@ -584,54 +597,73 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
 
     if 'batman' in methods:
         print('Fitting primary eclipses with batman model...')
-        bat_pri, bat_pri_err, indv_shape_params, global_shape_params = get_batman_eclipse_times(*kwargs_pri, 'pri', epoch_width)
+        bat_pri, bat_pri_err, indv_shape_params, global_shape_params, valid_batman_Tpreds = get_batman_eclipse_times(*kwargs_pri, 'pri', epoch_width)
+        pri_times['batman'] = bat_pri
+        pri_errs['batman'] = bat_pri_err
         P_bat = global_shape_params['P']
         if verbose:
             print(f"\tP_bat (pri) = {P_bat:.7f} days")
-        plot_shape_variation(tic_id, indv_shape_params, global_shape_params, 'pri')
 
         if bat_pri == 0:
             config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
             return None
 
-        if verbose:
-            print('Fitting secondary eclipses with batman model...')
-        bat_sec, bat_sec_err, indv_shape_params_sec, global_shape_params_sec = get_batman_eclipse_times(*kwargs_sec, 'sec', epoch_width)
+        print('Fitting secondary eclipses with batman model...')
+        bat_sec, bat_sec_err, indv_shape_params_sec, global_shape_params_sec, valid_batman_Tpreds_sec = get_batman_eclipse_times(*kwargs_sec, 'sec', epoch_width)
+        sec_times['batman'] = bat_sec
+        sec_errs['batman'] = bat_sec_err
         P_bat_sec = global_shape_params_sec['P']
         if verbose:
             print(f"\tP_bat (sec) = {P_bat_sec:.7f} days")
-        plot_shape_variation(tic_id, indv_shape_params_sec, global_shape_params_sec, 'sec')
 
         if bat_sec == 0:
             config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
             return None
+
+        if indv_shape_params!=0 and indv_shape_params_sec!=0:
+            plot_shape_variation(tic_id,indv_shape_params,global_shape_params,indv_shape_params_sec,global_shape_params_sec)
+
+
         if return_global_eclipse_params:
             return global_shape_params, global_shape_params_sec
+    else:
+        valid_batman_Tpreds = None
+        valid_batman_Tpreds_sec = None
 
-    hd_pri, fold_pri, cc_pri, gress_pri, *errs_pri = get_eclipse_times(*kwargs_pri, 'pri', methods=methods)
-    if hd_pri == 0:
-        config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
-        return None
+    ecl_times, ecl_times_err = get_eclipse_times(*kwargs_pri, 'pri', valid_batman_Tpreds, methods=methods)
+    # if ecl_times['hd'] == 0:
+    #     config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
+    #     return None
 
-    hd_sec, fold_sec, cc_sec, gress_sec, *errs_sec = get_eclipse_times(*kwargs_sec, 'sec', methods=methods)
-    if hd_sec == 0:
-        config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
-        return None
+    ecl_times_sec, ecl_times_err_sec = get_eclipse_times(*kwargs_sec, 'sec', valid_batman_Tpreds_sec, methods=methods)
+    # if ecl_times_sec['hd'] == 0:
+    #     config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
+    #     return None
 
-    obs_pri = [hd_pri, fold_pri, cc_pri, gress_pri, bat_pri]
-    obs_sec = [hd_sec, fold_sec, cc_sec, gress_sec, bat_sec]
-    err_pri = list(errs_pri) + [bat_pri_err]
-    err_sec = list(errs_sec) + [bat_sec_err]
+    pri_times.update(ecl_times)
+    sec_times.update(ecl_times_sec)
+    pri_errs.update(ecl_times_err)
+    sec_errs.update(ecl_times_err_sec)
 
-    obs_pri = [ob for ob in obs_pri if list(ob) != []]
-    obs_sec = [ob for ob in obs_sec if list(ob) != []]
-    err_pri = [er for er in err_pri if list(er) != []]
-    err_sec = [er for er in err_sec if list(er) != []]
+    obs_pri = [pri_times[k] for k in methods]
+    obs_sec = [sec_times[k] for k in methods]
+    err_pri = [pri_errs[k] for k in methods]
+    err_sec = [sec_errs[k] for k in methods]
+
+    # obs_pri = [hd_pri, fold_pri, cc_pri, gress_pri, bat_pri]
+    # obs_sec = [hd_sec, fold_sec, cc_sec, gress_sec, bat_sec]
+    # err_pri = list(errs_pri) + [bat_pri_err]
+    # err_sec = list(errs_sec) + [bat_sec_err]
+
+    # obs_pri = [ob for ob in obs_pri if list(ob) != []]
+    # obs_sec = [ob for ob in obs_sec if list(ob) != []]
+    # err_pri = [er for er in err_pri if list(er) != []]
+    # err_sec = [er for er in err_sec if list(er) != []]
 
     return (obs_pri, obs_sec, err_pri, err_sec), methods
 
 
-def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec, 
+def compute_oc_and_best_period_old(tic_id, obs_pri, obs_sec, err_pri, err_sec, 
                                 P_primary, P_secondary, methods,verbose=True):
     """Compute O-C arrays, select best method, and refine periods.
 
@@ -641,8 +673,6 @@ def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec,
     all_obs = obs_pri + obs_sec
     O_Cs, cycles = [], []
     for obs in all_obs:
-        if obs == []:
-            continue
         cyc = np.round((np.array(obs) - obs[0]) / P_avg).astype(int)
         comp = obs[0] + cyc * P_avg
         OC = np.array(obs) - comp
@@ -652,9 +682,9 @@ def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec,
     OCs_pri, OCs_sec = O_Cs[:int(len(O_Cs) / 2)], O_Cs[int(len(O_Cs) / 2):]
 
     def _weighted_rms_and_coeffs(obs_arr, OC_arr, errs_arr):
-        errs = np.array([5 if e == 3 / (24 * 60) else e * 24 * 60 for e in errs_arr])
+        errs = np.array([5 if e == 5 / (24 * 60) else e * 24 * 60 for e in errs_arr])
         try:
-            coeffs, covm = np.polyfit(obs_arr, OC_arr * 24 * 60, 1, w=1 / errs, cov=True)
+            coeffs, covm = np.polyfit(obs_arr, OC_arr * 24 * 60, 1, w=1 / errs, cov=True) # this fits O-c against time
             uncert = np.sqrt(covm[0, 0])
         except Exception:
             coeffs = np.polyfit(obs_arr, OC_arr * 24 * 60, 1, w=1 / errs)
@@ -697,7 +727,7 @@ def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec,
     OC_sec_corr = OCs_sec[bi_sec] * 24 * 60 - np.polyval(mid_coeffs, obs_sec[bi_sec])  # corrected O-C for secondary due to period refinement
 
     # Save OC Data
-    primP_err = pri_uncerts[bi_pri]
+    primP_err = pri_uncerts[bi_pri] # this is uncertainty in O-C vs time [in min/day] and not a period uncertainty
     secP_err = sec_uncerts[bi_sec]
 
     primary_data = np.column_stack((obs_pri[bi_pri], err_pri[bi_pri], OC_pri_corr, np.zeros(len(OC_pri_corr))))
@@ -717,3 +747,149 @@ def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec,
         pri_uncerts=pri_uncerts, sec_uncerts=sec_uncerts,
         pri_stds=pri_stds, sec_stds=sec_stds,
     )
+
+
+def compute_oc_and_best_period_new(tic_id, obs_pri, obs_sec, err_pri, err_sec, 
+                                P_primary, P_secondary, methods, get_single_best_method=True, 
+                                use_chisq=True, verbose=True):
+    """Compute O-C arrays, select best method, and refine periods.
+
+    Returns a dict with OC arrays, corrected periods, best indices, etc.
+    """
+
+    P_avg = (P_primary + P_secondary) / 2
+    
+    def _weighted_rms_and_coeffs(obs_arr, errs_arr):
+        cyc = np.round((np.array(obs_arr) - obs_arr[0]) / P_avg).astype(int)
+        try:
+            coeffs, covm = np.polyfit(cyc, obs_arr, 1, w=1 / errs_arr, cov=True)
+            uncert = np.sqrt(covm[0, 0])
+        except Exception:
+            coeffs, covm = np.polyfit(cyc, obs_arr, 1, w=1 / errs_arr, cov='unscaled')
+            uncert = np.sqrt(covm[0, 0]) #np.nan
+
+        fit = np.polyval(coeffs, cyc)
+        res = (obs_arr - fit)
+        red_chi2 = np.sum((res / errs_arr) ** 2) / (len(obs_arr) - 2)  if len(obs_arr) > 4 else None  # reduced chi-squared for linear fit
+        wrms = np.sqrt(np.sum(res ** 2 / errs_arr ** 2) / np.sum(1 / errs_arr ** 2)) * 24 * 60 # this gives the weighted RMS in minutes
+        return wrms, coeffs, uncert, cyc,res, red_chi2
+
+    pri_stds, pri_coeffs, pri_uncerts, pri_cyc, pri_res, pri_red_chi2 = [], [], [], [],[],[]
+    sec_stds, sec_coeffs, sec_uncerts, sec_cyc, sec_res, sec_red_chi2 = [], [], [], [],[],[]
+
+    for i in range(len(obs_pri)):
+        ws, co, un, cyc,resid, red_chi2 = _weighted_rms_and_coeffs(obs_pri[i], err_pri[i])
+        pri_stds.append(ws)
+        pri_coeffs.append(co)
+        pri_uncerts.append(un)
+        pri_cyc.append(cyc)
+        pri_res.append(resid)
+        pri_red_chi2.append(red_chi2)
+
+
+    for i in range(len(obs_sec)):
+        ws, co, un,cyc,resid, red_chi2 = _weighted_rms_and_coeffs(obs_sec[i], err_sec[i])
+        sec_stds.append(ws)
+        sec_coeffs.append(co)
+        sec_uncerts.append(un)
+        sec_cyc.append(cyc)
+        sec_res.append(resid)
+        sec_red_chi2.append(red_chi2)
+
+    if None in pri_red_chi2 or None in sec_red_chi2:
+        use_chisq = False
+
+    if get_single_best_method:
+        # Pool primary + secondary residuals per method into one weighted RMS so a
+        # single method index can be selected for both eclipse types.
+        # since pri and sec are used together not independently,
+        # small systematic offset between diff mthds for pri and sec impacts O-C interpretation
+        # (precession against method artifact). diff indices would be more adequate if treating
+        # pri/sec as unrelated timing measurements.
+        combined_stds = []
+        combined_red_chi2 = []
+        for i in range(len(methods)):
+            res_i = np.concatenate([pri_res[i], sec_res[i]])
+            err_i = np.concatenate([err_pri[i], err_sec[i]])
+            combined_stds.append(
+                np.sqrt(np.sum(res_i ** 2 / err_i ** 2) / np.sum(1 / err_i ** 2)) * 24 * 60
+            )
+            # dof: slope+intercept fit independently for primary and secondary (4 params total)
+            combined_red_chi2.append( (np.sum((res_i / err_i) ** 2) / (len(res_i) - 4)) if len(res_i) > 8 else None )
+
+        bi = select_best_index(combined_stds, chi2_red=combined_red_chi2 if use_chisq else None)  # single best index for both primary and secondary
+        bi_pri = bi_sec = bi
+        if verbose:
+            print(f"\nBest combined method index: {bi} ({methods[bi]})")
+    else:
+        bi_pri = select_best_index(pri_stds, chi2_red=pri_red_chi2 if use_chisq else None)  # best index for primary method
+        bi_sec = select_best_index(sec_stds, chi2_red=sec_red_chi2 if use_chisq else None)  # best index for secondary method
+        if verbose:
+            print(f"\nBest primary method index: {bi_pri} ({methods[bi_pri]}), Best secondary method index: {bi_sec} ({methods[bi_sec]})")
+
+
+    P_pri = pri_coeffs[bi_pri][0]
+    P_sec = sec_coeffs[bi_sec][0]
+    Pref  = (P_pri + P_sec) / 2
+
+    # choose either first observed time (or intercept from fit) as reference for both eclipse types
+    # this would make both O-C curves start close to zero, 
+    # and their slopes show the timing drift relative to first measured time as P changes
+    # Tref_pri = pri_coeffs[bi_pri][1]
+    # Tref_sec = sec_coeffs[bi_sec][1]
+    Tref_pri = obs_pri[bi_pri][0]  
+    Tref_sec = obs_sec[bi_sec][0] 
+
+    # use average Pref to get Calculated times for both eclipse types
+    calc_pri = Tref_pri + Pref * pri_cyc[bi_pri]
+    calc_sec = Tref_sec + Pref * sec_cyc[bi_sec]
+
+    OC_pri = (obs_pri[bi_pri] - calc_pri)*24*60
+    OC_sec = (obs_sec[bi_sec] - calc_sec)*24*60
+
+
+    primary_data = np.column_stack((obs_pri[bi_pri], err_pri[bi_pri], OC_pri, np.zeros_like(OC_pri)))
+    secondary_data = np.column_stack((obs_sec[bi_sec], err_sec[bi_sec], OC_sec, np.ones_like(OC_sec)))
+
+    combined_data = np.vstack((primary_data, secondary_data))
+    head = "eclipse_time,eclipse_time_err,OC,flag\nflag: 0=primary, 1=secondary"
+    fmt = ['%.15f', '%.15f', '%.19f', '%d']
+    out_dir = config.data_path(config.OC_TXT_DIR)
+    os.makedirs(out_dir, exist_ok=True)
+    np.savetxt(os.path.join(out_dir, f'TIC{tic_id[4:]}_OCwErr_new.txt'), combined_data, fmt=fmt, delimiter=",", header=head)
+
+    plot_method_comparison(
+        tic_id, obs_pri, obs_sec, err_pri, err_sec, methods,
+        Tref_pri, Tref_sec, Pref, pri_stds, sec_stds, pri_red_chi2, sec_red_chi2,
+        best_index_primary=bi_pri, best_index_secondary=bi_sec,
+    )
+
+    return dict(
+        OC_pri_corr=OC_pri, OC_sec_corr=OC_sec,
+        P_primary_new=P_pri, P_secondary_new=P_sec,
+        Tref_pri=Tref_pri, Tref_sec=Tref_sec, Pref=Pref,
+        best_index_primary=bi_pri, best_index_secondary=bi_sec,
+        pri_uncerts=pri_uncerts, sec_uncerts=sec_uncerts,
+        pri_stds=pri_stds, sec_stds=sec_stds,
+        pri_red_chi2=pri_red_chi2, sec_red_chi2=sec_red_chi2,
+    )
+
+
+def compute_oc_and_best_period(tic_id, obs_pri, obs_sec, err_pri, err_sec,
+                                P_primary, P_secondary, methods, get_single_best_method=False, 
+                                use_old_func=False, use_chisq=True, verbose=True):
+    """ 
+    Compute 
+
+    Parameters
+    ----------
+    
+
+    """
+    if use_old_func:
+        return compute_oc_and_best_period_old(tic_id, obs_pri, obs_sec, err_pri, err_sec, 
+                                P_primary, P_secondary, methods, verbose)
+    else:
+        return compute_oc_and_best_period_new(tic_id, obs_pri, obs_sec, err_pri, err_sec, 
+                                P_primary, P_secondary, methods, get_single_best_method,
+                                use_chisq=use_chisq, verbose=verbose)
