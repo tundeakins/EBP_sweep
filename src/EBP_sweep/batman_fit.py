@@ -81,11 +81,11 @@ def make_transit_params(t0=0.0, period=1.0, rp=0.1, dur=0.1, b=0.0, u=(0.3, 0.2)
 	return params
 
 
-def residual(params, batmodel, t, flux, err):
+def residual(params, batmodel, t, flux, err, visit_idx=None):
 	"""Compute the residuals between the observed flux and the model flux for given parameters."""
 
 	values = params.valuesdict()
-	flux_model = batman_flux_model(batmodel, values, t)
+	flux_model = batman_flux_model(batmodel, values, t, visit_idx=visit_idx)
 	res = (flux - flux_model) / err
 	# Add gaussian prior constraints if defined in the parameters
 	for p in params:
@@ -96,23 +96,46 @@ def residual(params, batmodel, t, flux, err):
 	return res
 
 
-def batman_flux_model(model, param_values, t=None):
-	"""Compute the flux model using batman for given parameters and time array."""
+def batman_flux_model(model, param_values, t=None, visit_idx=None, return_trend=False):
+	"""Compute the flux model using batman for given parameters and time array.
+
+	visit_idx : array-like of int, optional
+		Per-point 0-based visit index (one entry per point of ``model.t``/``t``) selecting
+		which ``offset_<i>``/``slope_<i>`` entry of ``param_values`` applies to that point,
+		so different visits can share the same eclipse shape but have independent baseline
+		offset and slope. If None (default), the single global 'offset'/'slope' entries of
+		``param_values`` are applied to every point, matching the original behaviour.
+	"""
 
 	p = make_transit_params(param_values['t0'], param_values['P'], param_values['rp'], param_values['dur'],
 							 param_values['b'], (param_values['u1'], param_values['u2']))
 	if t is not None:
 		model = batman.TransitModel(p, t)
-	phi = 2 * np.pi * (model.t - param_values['t0']) / param_values['P']
+	phi = 2 * np.pi * (model.t - p.t0) / p.per
 	Fev = -param_values['Aev'] * np.cos(2 * phi)
-	slope = param_values['slope'] * (model.t - param_values['t0'])
 
-	return model.light_curve(p) + Fev + param_values['offset'] + slope
+	if visit_idx is None:
+		offset = param_values['offset']
+		t_ref   = p.t0 + p.per * np.round((model.t.mean() - p.t0)/p.per)
+		slope = param_values['slope'] * (model.t - t_ref)
+	else:
+		visit_idx = np.asarray(visit_idx)
+		n_visits = int(visit_idx.max()) + 1
+		offset_vals = np.array([param_values[f'offset_{i}'] for i in range(n_visits)])
+		slope_vals = np.array([param_values[f'slope_{i}'] for i in range(n_visits)])
+		offset = offset_vals[visit_idx]
+
+		visit_centers = np.array([model.t[visit_idx == i].mean() for i in range(n_visits)])
+		t_ref = np.array([p.t0 + p.per * np.round((model.t[visit_idx == i].mean() - p.t0)/p.per) for i in range(n_visits)])
+		t_ref = t_ref[visit_idx]
+		slope = slope_vals[visit_idx] * (model.t - t_ref)
+
+	return model.light_curve(p) + Fev + offset + slope if not return_trend else (model.light_curve(p) + Fev + offset + slope, offset + slope)
 
 
 def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, pooled_sectors=None,
 							  param_priors=dict(t0=0, P=1, rp=0.1, dur=0.1, b=0, u1=0, u2=0, Aev=0, offset=0, slope=0),
-							  tic_id=None, ecl_type=None, return_model=False, verbose=True):
+							  tic_id=None, ecl_type=None, pooled_visits=None, return_model=False, verbose=True):
 	"""
 	Fit the global eclipse shape using batman and return the best-fit parameters.
 
@@ -125,7 +148,9 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 	pooled_fluxerrs : array-like
 		Flux errors of the pooled eclipses.
 	pooled_sectors : array-like
-		Sector numbers of the pooled eclipses.
+		Sector numbers of the pooled eclipses, used only to group the diagnostic plot panels
+		(one panel per unique value) when `tic_id`/`ecl_type` are given. Defaults to
+		`pooled_visits` if not supplied.
 	tic_id : str
 		TIC ID of the target.
 	ecl_type : str
@@ -140,13 +165,38 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 		Parameters include: 't0', 'P', 'rp', 'dur', 'b', 'u1', 'u2', 'Aev', 'offset', 'slope'.
 		Each parameter is set to fixed default values: dict(t0=0,P=1,rp=0.1,dur=0.1,b=0,u1=0,u2=0,Aev=0,offset=0,slope=0)
 		unless specified in the param_priors dictionary.
+
+		When `pooled_visits` is given, the 'offset' and 'slope' entries are fit independently
+		per visit instead of as single shared parameters (every other parameter, including
+		't0', stays one shared/global value across all visits). Their entry in `param_priors`
+		is normally a single prior spec (float/tuple as above) applied to every visit; pass a
+		dict instead, keyed by the labels appearing in `pooled_visits`, to give a different
+		prior per visit.
+	pooled_visits : array-like, optional
+		Visit/dataset label for each point in `pooled_times` (e.g. one label per night or
+		telescope), same length as `pooled_times`. When given, the eclipse shape ('t0', 'P',
+		'rp', 'dur', 'b', 'u1', 'u2', 'Aev') is still fit jointly to all visits, but 'offset'
+		and 'slope' are fit separately per unique visit label, so all visits share one eclipse
+		model while each keeps its own baseline level and linear trend. Each visit's 'slope'
+		is measured relative to that visit's own mean time (not the shared 't0', which may be
+		days or weeks away) so 'offset' stays interpretable as the baseline level near that
+		visit regardless of how far it sits from 't0'; the per-visit reference times are
+		returned as a `visit_centers` attribute on `result.params` (see Returns) so later
+		`batman_flux_model(..., visit_idx=...)` calls reproduce the fit exactly. If None
+		(default), a single 'offset'/'slope' is fit across all pooled points relative to
+		't0', matching the original single-baseline behaviour.
 	verbose : bool, optional
 		If True, print progress messages. Default is True.
 
 	Returns
 	-------
 	result.params : lmfit.Parameters
-		Best-fit parameters from the global eclipse shape fit."""
+		Best-fit parameters from the global eclipse shape fit. When `pooled_visits` is given,
+		'offset'/'slope' are replaced by 'offset_<i>'/'slope_<i>' for each visit index `i`
+		(0-based, in the sorted order of `np.unique(pooled_visits)`), and the returned
+		`result.params` additionally carries a `.visit_centers` attribute (the per-visit
+		reference time each 'slope_<i>' is measured from) and a `.visit_labels` attribute
+		(the corresponding `np.unique(pooled_visits)` labels)."""
 
 	exp_time = mode(np.diff(pooled_times)).mode
 	model = batman.TransitModel(make_transit_params(),
@@ -158,39 +208,65 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 	priors = dict(t0=0, P=1, rp=0.1, dur=0.1, b=0, u1=0, u2=0, Aev=0, offset=0, slope=0)
 	priors.update(param_priors)  # update the default priors with any user-specified priors
 
+	if pooled_visits is not None:
+		pooled_visits = np.asarray(pooled_visits)
+		unique_visits, visit_idx = np.unique(pooled_visits, return_inverse=True)
+		n_visits = len(unique_visits)
+		if pooled_sectors is None:
+			pooled_sectors = pooled_visits  # default plot grouping to visits when sectors aren't given separately
+	else:
+		visit_idx = None
+		n_visits = 1
+
 	params = Parameters()
+
+	def _add_param(name, v):
+		if isinstance(v, (float, int)):
+			params.add(name, value=v, vary=False)
+		elif isinstance(v, tuple) and len(v) == 2:  # normal (mean, std)
+			params.add(name, value=v[0], user_data=(v[0], v[1]) if v[1]>0 else None)
+		elif isinstance(v, tuple) and len(v) == 3:  # uniform (min, value, max)
+			assert v[0] <= v[1] <= v[2], f"Invalid uniform prior for parameter '{name}': {v}"
+			params.add(name, value=v[1], min=v[0], max=v[2])
+		elif isinstance(v, tuple) and len(v) == 4:  # truncated normal (mean, std, min, max)
+			assert v[2] <= v[0] <= v[3], f"Invalid truncated normal prior for parameter '{name}': {v}"
+			params.add(name, value=v[0], min=v[2], max=v[3], user_data=(v[0], v[1]))
+		else:
+			raise ValueError(f"Invalid prior specification for parameter '{name}': {v}")
+
 	for key in priors.keys():
 		v = priors[key]
-		if isinstance(v, (float, int)):
-			params.add(key, value=v, vary=False)
-		elif isinstance(v, tuple) and len(v) == 2:  # normal (mean, std)
-			params.add(key, value=v[0], user_data=(v[0], v[1]))
-		elif isinstance(v, tuple) and len(v) == 3:  # uniform (min, value, max)
-			assert v[0] <= v[1] <= v[2], f"Invalid uniform prior for parameter '{key}': {v}"
-			params.add(key, value=v[1], min=v[0], max=v[2])
-		elif isinstance(v, tuple) and len(v) == 4:  # truncated normal (mean, std, min, max)
-			assert v[2] <= v[0] <= v[3], f"Invalid truncated normal prior for parameter '{key}': {v}"
-			params.add(key, value=v[0], min=v[2], max=v[3], user_data=(v[0], v[1]))
+		if key in ('offset', 'slope') and pooled_visits is not None:
+			# one independent parameter per visit; every other key stays a single shared parameter
+			for i, vlabel in enumerate(unique_visits):
+				vi = v[vlabel] if isinstance(v, dict) else v
+				_add_param(f'{key}_{i}', vi)
 		else:
-			raise ValueError(f"Invalid prior specification for parameter '{key}': {v}")
+			_add_param(key, v)
 
-	result = minimize(residual, params, args=(model, pooled_times, pooled_fluxes, pooled_fluxerrs),
-					   method='leastsq', nan_policy='omit')
+	fit_args = (model, pooled_times, pooled_fluxes, pooled_fluxerrs, visit_idx)
+	result = minimize(residual, params, args=fit_args, method='leastsq', nan_policy='omit')
 	if verbose: print(f"\tGLOBAL FIT: {result.message}")
 
 	# Cycle through parameters, fixing one at a time, resetting each before trying the next
 	if 'Could not estimate error-bars' in result.message or 'variable did not affect the fit' in result.message:
 		for p in ['P', 'Aev', 'b']:
-			if verbose: print(f"\tRetrying with {p} fixed to {params[p].value:.7f}...")
-			params[p].vary = False
-			result = minimize(residual, params, args=(model, pooled_times, pooled_fluxes, pooled_fluxerrs),
-								method='leastsq', nan_policy='omit')
-			if verbose: print(f"\tGLOBAL FIT ({p} fixed): {result.message}")
-			params[p].vary = True  # reset before trying next parameter
-			if 'Could not estimate error-bars' not in result.message and 'variable did not affect the fit' not in result.message:
-				break
+			if params[p].vary:
+				if verbose: print(f"\tRetrying with {p} fixed to {params[p].value:.7f}...")
+				params[p].vary = False
+				result = minimize(residual, params, args=fit_args, method='leastsq', nan_policy='omit')
+				if verbose: print(f"\tGLOBAL FIT ({p} fixed): {result.message}")
+				params[p].vary = True  # reset before trying next parameter
+				if 'Could not estimate error-bars' not in result.message and 'variable did not affect the fit' not in result.message:
+					break
 
-	result_values = {k: result.params[k].value for k in ('t0', 'P', 'rp', 'dur', 'b', 'u1', 'u2', 'Aev', 'offset', 'slope')}
+	result_values = {k: result.params[k].value for k in ('t0', 'P', 'rp', 'dur', 'b', 'u1', 'u2', 'Aev')}
+	if pooled_visits is not None:
+		result_values.update({f'offset_{i}': result.params[f'offset_{i}'].value for i in range(n_visits)})
+		result_values.update({f'slope_{i}': result.params[f'slope_{i}'].value for i in range(n_visits)})
+	else:
+		result_values['offset'] = result.params['offset'].value
+		result_values['slope'] = result.params['slope'].value
 
 	# Inflate formal (white-noise-only) uncertainties for time-correlated ("red")
 	# noise in the residuals -- see fit_epoch_t0 for why this is a post-hoc multiply
@@ -199,7 +275,7 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 	# epoch window rather than across the gaps between them.
 	pooled_phases = phase_fold(pooled_times, result_values['P'], result_values['t0'], phase0=-0.35)
 	in_eclipse_mask = abs(pooled_phases) < 0.5*result_values["dur"]/result_values["P"]
-	bestfit_flux_at_data = batman_flux_model(model, result_values)
+	bestfit_flux_at_data = batman_flux_model(model, result_values, visit_idx=visit_idx)
 	beta = red_noise_beta_factor(pooled_fluxes[in_eclipse_mask] - bestfit_flux_at_data[in_eclipse_mask], time=pooled_times[in_eclipse_mask])
 	for pname in result.params:
 		if result.params[pname].vary and result.params[pname].stderr:
@@ -220,8 +296,20 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 			sector_mask = pooled_sectors == sector
 			ax.plot(pooled_times[sector_mask], pooled_fluxes[sector_mask], 'k.')
 			smooth_time = np.linspace(np.min(pooled_times[sector_mask]), np.max(pooled_times[sector_mask]), 10 * len(pooled_times[sector_mask]))
-			ax.plot(smooth_time, batman_flux_model(model, result_values, t=smooth_time), 'r-')
-			ax.set_title(f'Sector {int(sector)}', fontsize=12, fontweight='bold')
+			if pooled_visits is not None:
+				# overplot using whichever visit dominates this panel's points, so the curve
+				# reflects that visit's own offset/slope rather than a mismatched one
+				sector_visits, counts = np.unique(visit_idx[sector_mask], return_counts=True)
+				smooth_visit_idx = np.full(smooth_time.shape, sector_visits[np.argmax(counts)])
+				smooth_flux = batman_flux_model(model, result_values, t=smooth_time, visit_idx=smooth_visit_idx)
+			else:
+				smooth_flux = batman_flux_model(model, result_values, t=smooth_time)
+			ax.plot(smooth_time, smooth_flux, 'r-')
+			try:  # numeric sector numbers print as before; non-numeric visit labels (e.g. night names) print as-is
+				panel_title = f'Sector {int(sector)}'
+			except (TypeError, ValueError):
+				panel_title = str(sector)
+			ax.set_title(panel_title, fontsize=12, fontweight='bold')
 			ax.set_xlabel('Time (BTJD)', fontsize=10)
 			ax.set_ylabel('Flux', fontsize=10)
 			ax.grid(True, alpha=0.3)
@@ -236,6 +324,12 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 		os.makedirs(out_dir, exist_ok=True)
 		fig.savefig(os.path.join(out_dir, f'TIC{tic_id[4:]}_AllEclipseFit_{ecl_type}_P{P_bat.n:.4f}.jpg'), dpi=150, bbox_inches='tight')
 		plt.close(fig)
+
+	if pooled_visits is not None:
+		# expose so that downstream batman_flux_model(..., visit_idx=...) calls (e.g. for
+		# plotting) automatically reuse the same per-visit time reference used in the fit
+		# result.params.visit_centers = visit_centers
+		result.params.visit_labels = unique_visits
 
 	return (result.params, model) if return_model else result.params
 

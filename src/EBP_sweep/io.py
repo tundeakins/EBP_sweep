@@ -196,6 +196,7 @@ def read_global_eclipse_params(tic_id):
             "EBP_sweep.timing.compute_eclipse_times(..., methods='batman')."
         )
 
+    print(f"Reading global eclipse parameters from '{csv_path}'")
     df = pd.read_csv(csv_path, index_col=0)
 
     params = {}
