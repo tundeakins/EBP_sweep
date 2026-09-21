@@ -28,7 +28,7 @@ from .periods import find_orbital_period, prepare_flat_lc, separate_eclipses
 from .timing import compute_eclipse_times, compute_oc_and_best_period
 from .reporting import create_DV_summary_pdf
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "EclipsingBinaryTarget",
