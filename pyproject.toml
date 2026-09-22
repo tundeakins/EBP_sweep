@@ -28,6 +28,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
 dependencies = [
+    "eleanor @ git+https://github.com/afeinstein20/eleanor.git",
     # batman-package's compiled extensions (as of 2.5.3) were built against
     # the NumPy 1.x C-API and crash under NumPy 2.x at import time
     # (AttributeError: _ARRAY_API not found); capped until upstream ships a
@@ -52,6 +53,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+eleanor = ["eleanor>=2.0.5"]
 
 [project.urls]
 Homepage = "https://github.com/tundeakins/EBP_sweep"

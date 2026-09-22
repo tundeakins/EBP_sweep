@@ -28,5 +28,6 @@ Data/
 *.jpg
 *.jpeg
 *.pkl
+*.fits
 Fig*
 ebpsweep.ipynb

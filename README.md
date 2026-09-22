@@ -5,7 +5,8 @@ eclipsing binaries from TESS photometry.
 
 Given a TIC ID, the pipeline:
 
-1. Downloads and cleans the TESS light curve (QLP, via `lightkurve`).
+1. Downloads and cleans the TESS light curve (QLP, then SPOC via `lightkurve`),
+   falling back to `eleanor` FFI extraction when neither has data in the requested sectors.
 2. Finds the orbital period with a BLS + TLS search.
 3. Flattens the light curve sector by sector and separates primary and
    secondary eclipses.
@@ -52,6 +53,24 @@ git clone https://github.com/tundeakins/EBP_sweep.git
 cd EBP_sweep
 pip install -e ".[dev]"
 ```
+
+For automatic FFI extraction when archived QLP/SPOC light curves are absent,
+install the optional dependency from your local clone:
+
+```bash
+pip install -e ".[eleanor]"
+```
+
+The fallback runs automatically in `run_target` and `load_and_clean_lc` and
+requires TESS FFI coverage and network access. It uses `eleanor` corrected
+flux, flux uncertainties, BTJD times, and only cadences with `quality == 0`
+(as recommended in the [eleanor documentation](https://eleanor.readthedocs.io/en/latest/)).
+`quality_bitmask` applies only to archived products. Sector bounds also apply
+to extraction; this fallback does not fill individual missing sectors when
+archive curves are already available. Failed extractions are recorded in
+`Data/errors.csv` under the configured output directory, and targets with no
+fallback curves remain in `Data/eleanor_ticids.csv`. To disable extraction in
+a direct loader call, pass `eleanor_fallback=False`.
 
 ## Quick start
 

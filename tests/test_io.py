@@ -67,3 +67,116 @@ def test_read_global_eclipse_params_raises_if_never_saved(tmp_path, monkeypatch)
 
     with pytest.raises(FileNotFoundError):
         read_global_eclipse_params("TIC 000000000")
+
+
+@pytest.fixture
+def lc_io(tmp_path, monkeypatch):
+    from EBP_sweep import io
+    monkeypatch.setattr(config, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(io, "plot_all_sectors", lambda *args: None)
+    return io
+
+
+def _archive_result(io, curves):
+    from astropy.table import Table
+
+    class Search:
+        def __init__(self, curves):
+            self.curves = curves
+            self.table = Table({"sequence_number": [lc.sector for lc in curves]})
+
+        def __getitem__(self, keep):
+            return Search([lc for lc, selected in zip(self.curves, keep) if selected])
+
+        def download_all(self, **kwargs):
+            return io.lk.LightCurveCollection(self.curves)
+
+    return Search(curves)
+
+
+def _curve(io, sector=1):
+    lc = io.lk.TessLightCurve(time=np.arange(20) * 0.02 + 1500,
+                            flux=np.ones(20), flux_err=np.full(20, 0.01),
+                            meta={"SECTOR": sector})
+    lc["sap_bkg"] = np.ones(20)
+    return lc
+
+
+@pytest.mark.parametrize("author", ["QLP", "SPOC"])
+def test_archive_preferred_over_eleanor(lc_io, monkeypatch, author):
+    calls = []
+    def search(*args, **kwargs):
+        calls.append(kwargs["author"])
+        return _archive_result(lc_io, [_curve(lc_io)] if kwargs["author"] == author else [])
+    monkeypatch.setattr(lc_io.lk, "search_lightcurve", search)
+    monkeypatch.setattr(lc_io, "_load_eleanor_lcs", lambda *a: pytest.fail("Unexpected FFI extraction"))
+    lc = lc_io.load_and_clean_lc("TIC 123")
+    assert len(lc) == 20  # constant background must not discard every cadence
+    assert calls == (["QLP"] if author == "QLP" else ["QLP", "SPOC"])
+
+
+def test_eleanor_fallback_conversion_and_sector_filter(lc_io, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    monkeypatch.setattr(lc_io.lk, "search_lightcurve", lambda *a, **kw: _archive_result(lc_io, [_curve(lc_io, 1)]))
+    extracted = []
+    def target_data(source, **kwargs):
+        extracted.append(source.sector)
+        return SimpleNamespace(time=np.array([1500., 1501., 1502., 1503.]),
+                               corr_flux=np.array([100., 100., np.nan, 100.]),
+                               flux_err=np.ones(4), quality=np.array([0, 1, 0, 0]),
+                               flux_bkg=np.ones(4))
+    def multi_sectors(**kwargs):
+        assert kwargs == {"tic": 123, "sectors": [2, 3]}
+        return [SimpleNamespace(sector=s) for s in (1, 2, 3)]
+    monkeypatch.setitem(sys.modules, "eleanor", SimpleNamespace(multi_sectors=multi_sectors, TargetData=target_data))
+    lc = lc_io.load_and_clean_lc("TIC 123", sector_bounds=(2, 3))
+    assert extracted == [2, 3]
+    assert list(lc.time.value) == [1500., 1503., 1500., 1503.]
+    assert lc.time.format == "btjd" and lc.time.scale == "tdb"
+    np.testing.assert_allclose(lc.flux.value, 1.)
+    np.testing.assert_allclose(lc.flux_err.value, 0.01)
+    assert set(lc["sector"]) == {2, 3}
+    assert lc.meta["AUTHOR"] == "eleanor"
+
+
+@pytest.mark.parametrize("failure", [ImportError("eleanor"), RuntimeError("no FFI coverage")])
+def test_eleanor_failure_logged(lc_io, monkeypatch, failure):
+    monkeypatch.setattr(lc_io.lk, "search_lightcurve", lambda *a, **kw: _archive_result(lc_io, []))
+    def fail(*args):
+        raise failure
+    monkeypatch.setattr(lc_io, "_load_eleanor_lcs", fail)
+    assert lc_io.load_and_clean_lc("TIC 123") is None
+    assert os.path.exists(config.data_path(config.ELEANOR_TICIDS_LOG))
+    assert str(failure) in open(config.data_path(config.ERRORS_LOG)).read()
+
+
+def test_failed_search_does_not_trigger_eleanor(lc_io, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("archive unavailable")
+    monkeypatch.setattr(lc_io.lk, "search_lightcurve", fail)
+    monkeypatch.setattr(lc_io, "_load_eleanor_lcs", lambda *a: pytest.fail("Unexpected extraction"))
+    assert lc_io.load_and_clean_lc("TIC 123") is None
+
+
+def test_eleanor_disabled(lc_io, monkeypatch):
+    monkeypatch.setattr(lc_io.lk, "search_lightcurve", lambda *a, **kw: _archive_result(lc_io, []))
+    monkeypatch.setattr(lc_io, "_load_eleanor_lcs", lambda *a: pytest.fail("Unexpected extraction"))
+    assert lc_io.load_and_clean_lc("TIC 123", eleanor_fallback=False) is None
+
+
+def test_eleanor_keeps_successful_sectors(lc_io, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    def extract(source, **kwargs):
+        if source.sector == 1:
+            raise RuntimeError("sector failed")
+        return SimpleNamespace(time=np.array([1500., 1501.]), corr_flux=np.ones(2),
+                               flux_err=np.ones(2), quality=np.zeros(2))
+    monkeypatch.setitem(sys.modules, "eleanor", SimpleNamespace(
+        multi_sectors=lambda **kw: [SimpleNamespace(sector=s) for s in (1, 2)], TargetData=extract))
+    monkeypatch.setattr(lc_io.lk, "search_lightcurve", lambda *a, **kw: _archive_result(lc_io, []))
+    lc = lc_io.load_and_clean_lc("TIC 123")
+    assert len(lc) == 2
+    assert set(lc["sector"]) == {2}
+    assert "sector failed" in open(config.data_path(config.ERRORS_LOG)).read()

@@ -1,7 +1,7 @@
 """Downloading and cleaning input light curves.
 
-Currently supports TESS light curves (via `lightkurve`/QLP) as the primary
-input, plus a helper for converting ground-based follow-up photometry
+Supports archived TESS light curves with an optional eleanor FFI fallback,
+plus a helper for converting ground-based follow-up photometry
 (magnitudes) into relative flux.
 """
 
@@ -10,6 +10,7 @@ import os
 import numpy as np
 import lightkurve as lk
 import pandas as pd
+import eleanor
 from scipy.stats import mode
 from uncertainties import ufloat
 
@@ -18,7 +19,46 @@ from .plotting import plot_all_sectors
 from .utils import outlier_clipping
 
 
-def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_clip_sigma=2, sector_bounds=(None,None)):
+
+def _load_eleanor_lcs(tic_id, sector_bounds):
+    """Extract corrected FFI photometry, retaining only eleanor quality == 0."""
+    import eleanor  # Optional: archived light curves do not need this dependency.
+
+    tic = int(str(tic_id).upper().removeprefix("TIC").strip())
+    lower, upper = sector_bounds
+    sources = eleanor.multi_sectors(tic=tic, sectors='all')
+    curves = []
+    for source in sources:
+        if ((lower is not None and source.sector < lower)
+                or (upper is not None and source.sector > upper)):
+            continue
+        try:
+            data = eleanor.TargetData(source, do_pca=False, do_psf=False)
+            # eleanor's flags include its own diagnostics, so use its recommended
+            # zero-quality selection rather than interpreting them as SPOC bits.
+            good = ((np.asarray(data.quality) == 0)
+                    & np.isfinite(data.time) & np.isfinite(data.corr_flux)
+                    & np.isfinite(data.flux_err))
+            if not np.any(good):
+                raise ValueError("No usable eleanor cadences")
+            lc = lk.TessLightCurve(
+                time=np.asarray(data.time)[good], time_format="btjd", time_scale="tdb",
+                flux=np.asarray(data.corr_flux)[good],
+                flux_err=np.asarray(data.flux_err)[good],
+                meta={"SECTOR": int(source.sector), "TARGETID": tic,
+                      "LABEL": str(tic_id), "AUTHOR": "eleanor"},
+            )
+            lc["quality"] = np.asarray(data.quality)[good]
+            if getattr(data, "flux_bkg", None) is not None:
+                lc["sap_bkg"] = np.asarray(data.flux_bkg)[good]
+            curves.append(lc)
+        except Exception as exc:
+            config.log_error(tic_id, f"eleanor sector {source.sector}: {exc}")
+            print(f"eleanor sector {source.sector} failed: {exc}")
+    return lk.LightCurveCollection(curves)
+
+
+def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_clip_sigma=2, sector_bounds=(None,None), eleanor_fallback=True):
     """Download, background-filter, and outlier-clean the light curve.
 
     Returns good_lc (stitched, cleaned TessLightCurve) or None on failure.
@@ -49,6 +89,11 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_c
         Tuple specifying the lower and upper bounds of sectors to include.
         Default is (None, None), which includes all sectors.
 
+    eleanor_fallback : bool, optional
+        Extract FFI photometry with the optional ``eleanor`` package when no
+        QLP or SPOC curves exist within the requested sectors. Default True.
+        Eleanor always uses quality == 0; quality_bitmask applies to archive data.
+
     Returns
     -------
     lc_final : TessLightCurve or None
@@ -61,35 +106,73 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_c
     
 
     """
-    for attempt in range(3):
-        try:
-            search_result = lk.search_lightcurve(tic_id, mission='TESS', author="QLP")
-            break
-        except Exception as e:
-            print(f"Data Download:Attempt {attempt+1} failed with error: {e}")
-            if attempt == 2:
-                config.flag_ticid(tic_id, config.ELEANOR_TICIDS_LOG)
-                return None
-
-    if len(search_result.table) == 0:
-        config.flag_ticid(tic_id, config.ELEANOR_TICIDS_LOG)
-        return None
-
-    print(f"Downloading light curve for {tic_id}...")
-    lc_collection = search_result.download_all(quality_bitmask=quality_bitmask)
-
-    # filter sectors based on sector_bounds
     lower_bound, upper_bound = sector_bounds
+    lc_collection = lk.LightCurveCollection([])
+    for author in ("QLP", "SPOC"):
+        for attempt in range(3):
+            try:
+                search_result = lk.search_lightcurve(tic_id, mission="TESS", author=author)
+                break
+            except Exception as exc:
+                print(f"{author} search: attempt {attempt + 1} failed: {exc}")
+                if attempt == 2:
+                    # A failed search is not evidence that archive data are absent.
+                    config.log_error(tic_id, f"{author} search failed: {exc}")
+                    return None
+        if len(search_result.table) == 0:
+            continue
+        sectors = np.asarray(search_result.table["sequence_number"])
+        keep = np.ones(len(sectors), dtype=bool)
+        if lower_bound is not None:
+            keep &= sectors >= lower_bound
+        if upper_bound is not None:
+            keep &= sectors <= upper_bound
+        if not np.any(keep):
+            continue
+        print(f"Downloading {author} light curve for {tic_id}...")
+        try:
+            downloaded = search_result[keep].download_all(quality_bitmask=quality_bitmask)
+        except Exception as exc:
+            config.log_error(tic_id, f"{author} download failed: {exc}")
+            print(f"{author} download failed for {tic_id}: {exc}")
+            return None
+        if downloaded is not None:
+            lc_collection = lk.LightCurveCollection([
+                lc for lc in downloaded if lc is not None and len(lc) > 0
+            ])
+        # Failed downloads should be retried, not treated as missing products.
+        if not len(lc_collection):
+            config.log_error(tic_id, f"{author} download returned no usable light curves")
+            return None
+        break
+
+    if not len(lc_collection):
+        if eleanor_fallback:
+            print(f"No QLP/SPOC data in requested sectors for {tic_id}; trying eleanor...")
+            try:
+                lc_collection = _load_eleanor_lcs(tic_id, sector_bounds)
+            except ImportError as exc:
+                message = f"eleanor unavailable: {exc}. Install from the EBP_sweep clone with pip install -e '.[eleanor]'."
+                print(message)
+                config.log_error(tic_id, message)
+            except Exception as exc:
+                print(f"eleanor extraction failed for {tic_id}: {exc}")
+                config.log_error(tic_id, f"eleanor extraction failed: {exc}")
+        if not len(lc_collection):
+            config.flag_ticid(tic_id, config.ELEANOR_TICIDS_LOG)
+            return None
+
     lc_collection = lk.LightCurveCollection([
-        lc for lc in lc_collection
-        if (lower_bound is None or lc.sector >= lower_bound)
-        and (upper_bound is None or lc.sector <= upper_bound)
+        lc[np.isfinite(lc.flux.value)] for lc in lc_collection
+        if np.any(np.isfinite(lc.flux.value))
     ])
+    if not len(lc_collection):
+        config.flag_ticid(tic_id, config.IMPOSSIBLE_TICIDS_LOG)
+        return None
 
     # remove outlier points even below median flux
     for i, lc in enumerate(lc_collection):
-        lc_collection[i] = lc_collection[i][np.isfinite(lc_collection[i].flux.value)]
-        if mask_outliers:
+        if mask_outliers and len(lc_collection[i]) > 1:
             exp_time = mode(np.diff(lc.time.value)).mode * 24 * 60
             width = 0 if exp_time > 20 else 7 if exp_time > 5 else 15
             _, _, idx = outlier_clipping(lc_collection[i].time.value, lc_collection[i].flux.value,
@@ -106,14 +189,15 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_c
         lc_collection[i]['sector'] = lc_collection[i].sector
 
     lc = lc_collection.stitch()
-    bkg = lc.sap_bkg.value
-    if isinstance(bkg, np.ma.MaskedArray):
-        bkg = bkg.data
-
-    upper = np.nanmedian(bkg) + bkg_clip_sigma * np.nanstd(bkg)
-    lower = np.nanmedian(bkg) - bkg_clip_sigma * np.nanstd(bkg)
-    k = np.isfinite(bkg) & (bkg < upper) & (bkg > lower)
-    lc_final = lc[k]
+    lc_final = lc
+    if "sap_bkg" in lc.colnames:
+        bkg = np.asarray(np.ma.filled(lc.sap_bkg.value, np.nan))
+        finite = np.isfinite(bkg)
+        if np.any(finite):
+            center, scatter = np.nanmedian(bkg), np.nanstd(bkg)
+            # A constant background is valid; strict bounds used to discard it.
+            keep = finite if scatter == 0 else finite & (np.abs(bkg - center) < bkg_clip_sigma * scatter)
+            lc_final = lc[keep]
 
     if np.all(np.isnan(lc_final.flux.value)):
         config.flag_ticid(tic_id, config.IMPOSSIBLE_TICIDS_LOG)
