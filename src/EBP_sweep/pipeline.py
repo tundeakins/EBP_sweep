@@ -179,6 +179,9 @@ class EclipsingBinaryTarget:
         if result is None:
             return False
         (self.obs_pri, self.obs_sec, self.err_pri, self.err_sec), self.methods_used = result
+        if 'batman' in self.methods_used:
+            self.eclipse_params = {}
+            self.eclipse_params["pri"], self.eclipse_params["sec"] = io.read_global_eclipse_params(self.tic_id)
         return True
 
     def compute_oc(self):

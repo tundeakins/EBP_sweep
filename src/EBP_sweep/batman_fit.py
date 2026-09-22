@@ -501,7 +501,7 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 							P	= (P - 0.1, P, P + 0.1),
 							rp	= (0.5 * rp, rp, 1.5 * rp),
 							dur	= (min(0.01 * P, 0.9 * dur), dur, 0.3 * P),
-							b	= (0, 0.1, 1.8),
+							b	= (0, 0.1, 2.8),
 							u1	= (0, 0.3, 2),
 							u2	= (-1, 0.2, 1),
 							Aev	= (-0.1, 0, 0.1),
