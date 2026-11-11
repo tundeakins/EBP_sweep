@@ -252,6 +252,14 @@ def fit_global_eclipse_shape(pooled_times, pooled_fluxes, pooled_fluxerrs, poole
 	if 'Could not estimate error-bars' in result.message or 'variable did not affect the fit' in result.message:
 		for p in ['P', 'Aev', 'b']:
 			if params[p].vary:
+				if p == 'b':
+					if verbose: print(f"\tRetrying with max {p} set to 1.8 ...")
+					result.params['b'].max = 1.8
+					result = minimize(residual, params, args=fit_args, method='leastsq', nan_policy='omit')
+					if verbose: print(f"\tGLOBAL FIT ({p} max=1.8): {result.message}")
+					if 'Could not estimate error-bars' not in result.message:
+						break
+
 				if verbose: print(f"\tRetrying with {p} fixed to {params[p].value:.7f}...")
 				params[p].vary = False
 				result = minimize(residual, params, args=fit_args, method='leastsq', nan_policy='omit')
@@ -501,7 +509,7 @@ def get_batman_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ec
 							P	= (P - 0.1, P, P + 0.1),
 							rp	= (0.5 * rp, rp, 1.5 * rp),
 							dur	= (min(0.01 * P, 0.9 * dur), dur, 0.3 * P),
-							b	= (0, 0.1, 2.8),
+							b	= (0, 0.15, 2.8),
 							u1	= (0, 0.3, 2),
 							u2	= (-1, 0.2, 1),
 							Aev	= (-0.1, 0, 0.1),

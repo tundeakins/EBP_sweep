@@ -31,3 +31,4 @@ Data/
 *.fits
 Fig*
 ebpsweep.ipynb
+*copy.ipynb

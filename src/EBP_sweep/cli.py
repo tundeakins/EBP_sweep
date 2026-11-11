@@ -19,6 +19,8 @@ def main(argv=None):
                              help="lightkurve quality bitmask controlling which cadences are discarded (default: %(default)s).")
     run_parser.add_argument("--mask-outliers", action="store_true",
                              help="Mask outlier points during light-curve cleaning.")
+    run_parser.add_argument("--skip-sectors", nargs="+", type=int, default=(),
+                             help="Sector numbers to exclude, e.g. --skip-sectors 19 20.")
     run_parser.add_argument("--no-plots", action="store_true", help="Skip saving diagnostic plots.")
     run_parser.add_argument("--no-summary", action="store_true", help="Skip saving the PDF summary.")
 
@@ -29,6 +31,7 @@ def main(argv=None):
             args.tic_ids,
             quality_bitmask=args.quality_bitmask,
             mask_outliers=args.mask_outliers,
+            skip_sectors=args.skip_sectors,
             make_plots=not args.no_plots,
             make_summary=not args.no_summary,
         )

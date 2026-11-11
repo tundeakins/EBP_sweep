@@ -81,6 +81,12 @@ target = run_target("TIC 343127696", quality_bitmask="hardest")
 print(target.oc["P_primary_new"], target.oc["P_secondary_new"])
 ```
 
+Known problematic sectors can be excluded from a run:
+
+```python
+target = run_target("TIC 343127696", skip_sectors=[19])
+```
+
 For several targets:
 
 ```python
@@ -94,6 +100,9 @@ Or from the command line:
 ```bash
 ebp-sweep run "TIC 343127696" "TIC 81741369" --quality-bitmask hard
 ```
+
+Pass `--skip-sectors` to exclude one or more sectors, for example
+`--skip-sectors 19 20`.
 
 ## Tutorial
 

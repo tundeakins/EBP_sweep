@@ -57,6 +57,10 @@ class EclipsingBinaryTarget:
     mask_outliers : bool, optional
         Whether to mask outlier points during download-time cleaning.
         Default False.
+    sector_bounds : tuple, optional
+        Inclusive lower and upper sector bounds. Default ``(None, None)``.
+    skip_sectors : sequence of int, optional
+        Sector numbers to exclude from downloaded light curves. Default empty.
     methods : sequence of str, optional
         Eclipse-timing methods to run, in canonical order; see
         :func:`EBP_sweep.timing.compute_eclipse_times`.
@@ -98,7 +102,7 @@ class EclipsingBinaryTarget:
 
     def __init__(self, tic_id, quality_bitmask='hardest', mask_outliers=False, bkg_clip_sigma=2,
                  sector_bounds=(None, None), methods=['hd', 'fold', 'cc', 'gress', 'batman'], 
-                 epoch_width=0.2, get_single_best_method=True, verbose=True):
+                 epoch_width=0.2, get_single_best_method=True, verbose=True, skip_sectors=()):
         
         self.tic_id = tic_id
         self.quality_bitmask = quality_bitmask
@@ -124,6 +128,7 @@ class EclipsingBinaryTarget:
         self.verbose=verbose
         self.bkg_clip_sigma = bkg_clip_sigma
         self.sector_bounds = sector_bounds  # Default sector bounds, can be modified as needed
+        self.skip_sectors = tuple(skip_sectors)
         self.error_message = None
 
     def __getstate__(self):
@@ -152,7 +157,9 @@ class EclipsingBinaryTarget:
 
     def download(self):
         """Download and clean the light curve. Returns True on success."""
-        self.good_lc = io.load_and_clean_lc(self.tic_id, self.quality_bitmask, self.mask_outliers, self.bkg_clip_sigma, self.sector_bounds)
+        self.good_lc = io.load_and_clean_lc(
+            self.tic_id, self.quality_bitmask, self.mask_outliers, self.bkg_clip_sigma,
+            self.sector_bounds, skip_sectors=getattr(self, "skip_sectors", ()))
         return self.good_lc is not None
 
     def find_period(self):

@@ -184,10 +184,12 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
 
     if 'hd' in methods or 'fold' in methods:
         print(f"Getting {ecl_type} eclipse times using half-depth and folding methods ...")
+        eclipse_cut = 0.1 if P >= 4 else 0.2
         for T_pred in eclipse_test_times:
-            mask = abs(eclipse_lc.time.value - T_pred) <= 0.1 * P
+            
+            mask = abs(eclipse_lc.time.value - T_pred) <= eclipse_cut * P
             local_exptime = mode(np.diff(eclipse_lc.time.value[mask])).mode
-            local_expected_npts = 0.2 * P / local_exptime
+            local_expected_npts = 2 * eclipse_cut * P / local_exptime
             mask_left = eclipse_lc.time.value[mask] < T_pred
             mask_right = eclipse_lc.time.value[mask] > T_pred
 
@@ -340,7 +342,7 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
 
         if np.all(np.isnan(fluxes_sorted)):
             config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
-            return 0, 0, 0, 0
+            return 0, 0
 
         flux_left = fluxes_sorted[:np.nanargmin(fluxes_sorted)]
         flux_right = fluxes_sorted[np.nanargmin(fluxes_sorted):]
@@ -366,7 +368,7 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
         egress_fluxes = fluxes_sorted[egress_inner_index:egress_outer_index]
 
         if len(ingress_unphased) < 1 or len(egress_unphased) < 1:
-            return 0, 0, 0, 0
+            return 0, 0
 
         n_points = len(ingress_unphased)
         n_knots = max(5, min(30, n_points // 10))
@@ -380,7 +382,7 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
         n_knots = min(n_knots, max_knots)
         egress_spline = LSQUnivariateSpline(egress_unphased, egress_fluxes, t=np.linspace(egress_unphased[degree + 1], egress_unphased[-(degree + 1)], n_knots), k=degree)
 
-        center_offset = (0.1 * P) - unphased_eclipse_lc[ingress_outer_index]
+        center_offset = (eclipse_cut * P) - unphased_eclipse_lc[ingress_outer_index]
 
         # Define Ingress/Egress boundaries
 
@@ -393,9 +395,9 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
 
         for T_pred in eclipse_test_times:  # Using predicted eclipse times from TLS or Batman as a starting point
 
-            mask = abs(eclipse_lc.time.value - T_pred) <= 0.1 * P
+            mask = abs(eclipse_lc.time.value - T_pred) <= eclipse_cut * P
             local_exptime = mode(np.diff(eclipse_lc.time.value[mask])).mode
-            local_expected_npts = 2 * 0.1 * P / local_exptime
+            local_expected_npts = 2 * eclipse_cut * P / local_exptime
             mask_left = eclipse_lc.time.value[mask] < T_pred
             mask_right = eclipse_lc.time.value[mask] > T_pred
 
@@ -441,7 +443,7 @@ def get_eclipse_times(tic_id, phased_lc, eclipse_lc, P, pdgrm_results, ecl_type,
                 for shift in shifts:
 
                     # Cross Correlation
-                    test_times = local_times - T_pred + (0.1 * P) - shift
+                    test_times = local_times - T_pred + (eclipse_cut * P) - shift
                     cut_times = test_times[np.where((test_times > test_times[0] + shift_limit) & (test_times < test_times[-1] - shift_limit))]
                     cut_fluxes = local_fluxes[np.where((test_times > test_times[0] + shift_limit) & (test_times < test_times[-1] - shift_limit))]
                     model_flux = spline(cut_times)
@@ -546,7 +548,7 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
         As returned by :func:`EBP_sweep.periods.separate_eclipses`.
     epoch_width : float, optional
         Width of the eclipse epoch used in batman. Default is 0.2*P to get more Ellipsoidal variation.
-        Other methods strictly use 0.1*P to avoid Ellipsoidal variation.
+        Other methods strictly use 0.1*P if P>4d or 0.2*P otherwise to avoid Ellipsoidal variation.
     methods : list of str, optional
         List of methods to use for eclipse time computation.
         'hd':  half-depth method,
@@ -585,6 +587,8 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
     sec_errs = {}
 
     p = ecl_dict
+    if p['P_primary'] < 4:
+        epoch_width = 0.25
     kwargs_pri = (tic_id, p['phased'], p['lc_nonsecondary'], p['P_primary'], p['results_primary'])
     kwargs_sec = (tic_id, p['phased'], p['lc_nonprimary'], p['P_secondary'], p['results_secondary'])
     if isinstance(methods, str):
@@ -594,6 +598,7 @@ def compute_eclipse_times(tic_id, ecl_dict, epoch_width=0.2, methods=['hd', 'fol
             raise ValueError(f"Method {m} is not recognized. Must be one of ['hd', 'fold', 'cc', 'gress', 'batman'].")
     bat_pri = bat_sec = []
     bat_pri_err = bat_sec_err = []
+    
 
     if 'batman' in methods:
         print('Fitting primary eclipses with batman model...')

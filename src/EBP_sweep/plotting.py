@@ -393,7 +393,7 @@ def save_epoch_fits_pdf(tic_id, P, epoch_fits, ecl_type, method, extra_t0s=None)
                 ax.set_title(ax_title, fontsize=7)
                 ax.tick_params(labelsize=6)
                 try:
-                    ax.set_xlim([t0_fit - 0.1 * P, t0_fit + 0.1 * P])
+                    ax.set_xlim([t0_fit-0.1*P, t0_fit+0.1*P] if P>4 else [t0_fit-0.25*P, t0_fit+0.25*P])
                 except Exception:
                     pass
                 ax.grid(True, alpha=0.3)

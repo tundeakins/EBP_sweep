@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import mode
 from transitleastsquares import transitleastsquares
 from uncertainties import ufloat
+import multiprocessing
+
 
 from . import config
 from .plotting import plot_all_sectors, save_all_sectors_multipage_pdf
@@ -131,7 +133,7 @@ def flatten_tess_by_sector(lc, P, T0):
     return eclipse_masks, flat_lc, trends
 
 
-def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2, verbose=True):
+def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2, use_threads=None, verbose=True):
     """
     Determine the secondary period of a binary system using the phased light curve.
 
@@ -157,62 +159,46 @@ def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2, verbose=True):
     float
         The secondary period of the binary system.
     """
+    phased_bin = phased.bin(time_bin_size=0.001, aggregate_func=lambda x: np.nanmedian(np.asarray(x).copy()))
 
-    min_index = np.nanargmin(phased.flux)
-    mid_eclipse_phase = phased.time[min_index]
-    mid_eclipse_flux = phased.flux[min_index]
+    min_index = np.nanargmin(phased_bin.flux)
+    mid_eclipse_phase = phased_bin.time[min_index]
+    mid_eclipse_flux = phased_bin.flux[min_index]
 
-    if (mid_eclipse_phase < -0.45) or (mid_eclipse_phase > 0.45):
+    if (mid_eclipse_phase < -0.45) or (mid_eclipse_phase > 0.45): # adjust T0 if eclipse is near phase wrap-around
         T0 = T0 + 0.1 * P_best
         phased = lc.fold(P_best, T0, normalize_phase=True)
 
-    noneclipse_flux = np.nanmedian(phased.flux)
+    noneclipse_flux = np.nanmedian(phased_bin.flux)
 
     half_depth = (noneclipse_flux - mid_eclipse_flux) / 2 + mid_eclipse_flux
 
-    flux_left = phased.flux[min_index::-1]
-    ingress_index = min_index - np.nanargmax(flux_left >= half_depth)
+    flux_left = phased_bin.flux[min_index::-1]  # flux values to the left of the mid-eclipse point, reversed for easier indexing
+    ingress_index = min_index - np.nanargmax(flux_left >= half_depth) # find the index where flux rises above half depth on ingress side
 
-    flux_right = phased.flux[min_index:]
+    flux_right = phased_bin.flux[min_index:]
     egress_index = min_index + np.nanargmax(flux_right >= half_depth)
-    phase_ingress = phased.time[ingress_index]
-    phase_egress = phased.time[egress_index]
+    phase_ingress = phased_bin.time[ingress_index]
+    phase_egress = phased_bin.time[egress_index]
 
     eclipse_width = phase_egress - phase_ingress
 
     eclipse_min = mid_eclipse_phase - (mf * eclipse_width)
     eclipse_max = mid_eclipse_phase + (mf * eclipse_width)
 
-    noneclipse_times = []
-    noneclipse_phases = []
-    noneclipse_fluxes = []
-    noneclipse_flux_errs = []
-    noneclipse_sectors = []
+    phase_values = phased.time.value
+    outside_eclipse = ((phase_values > eclipse_max.value)
+                       | (phase_values < eclipse_min.value))
+    noneclipse_times = phased.time_original.value
+    noneclipse_fluxes = np.where(outside_eclipse, phased.flux.value, np.nan)
+    noneclipse_flux_errs = np.where(outside_eclipse, phased.flux_err.value, np.nan)
+    noneclipse_sectors = np.asarray(phased.sector)
 
-    noneclipse_indexes = []
-
-    for i in range(len(phased.time)):
-
-        if (phased.time[i] > eclipse_max) or (phased.time[i] < eclipse_min):
-
-            noneclipse_times.append(phased.time_original[i].value)
-            noneclipse_phases.append(phased.time[i].value)
-            noneclipse_fluxes.append(phased.flux[i].value)
-            noneclipse_flux_errs.append(phased.flux_err[i].value)
-            noneclipse_sectors.append(np.array(phased.sector)[i])
-            noneclipse_indexes.append(i)
-
-        else:
-
-            noneclipse_times.append(phased.time_original[i].value)
-            noneclipse_fluxes.append(np.nan)
-            noneclipse_flux_errs.append(np.nan)
-            noneclipse_sectors.append(np.array(phased.sector)[i])
-
-    sorted_nonprimary_times = np.array(noneclipse_times)[np.argsort(noneclipse_times)]
-    sorted_nonprimary_fluxes = np.array(noneclipse_fluxes)[np.argsort(noneclipse_times)]
-    sorted_nonprimary_flux_errs = np.array(noneclipse_flux_errs)[np.argsort(noneclipse_times)]
-    sorted_nonprimary_sectors = np.array(noneclipse_sectors)[np.argsort(noneclipse_times)]
+    sort_order = np.argsort(noneclipse_times)
+    sorted_nonprimary_times = noneclipse_times[sort_order]
+    sorted_nonprimary_fluxes = noneclipse_fluxes[sort_order]
+    sorted_nonprimary_flux_errs = noneclipse_flux_errs[sort_order]
+    sorted_nonprimary_sectors = noneclipse_sectors[sort_order]
 
     lc_nonprimary = lk.TessLightCurve(time=sorted_nonprimary_times, flux=sorted_nonprimary_fluxes, flux_err=sorted_nonprimary_flux_errs)
     lc_nonprimary['sector'] = sorted_nonprimary_sectors
@@ -223,7 +209,8 @@ def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2, verbose=True):
     lc_nonprimary_nonan = lc_nonprimary[~np.isnan(lc_nonprimary.flux)]
 
     model_secondary = transitleastsquares(lc_nonprimary_nonan.time.value, lc_nonprimary_nonan.flux.value,verbose=verbose)
-    results_secondary = model_secondary.power(period_min=0.99 * P_best, period_max=1.01 * P_best, oversampling_factor=o_factor, show_progress_bar=False)
+    results_secondary = model_secondary.power(period_min=0.99 * P_best, period_max=1.01 * P_best, oversampling_factor=o_factor, 
+                                            show_progress_bar=False,use_threads=use_threads)
     P_secondary = results_secondary.period
 
     phased_secondary = lc_nonprimary.fold(P_secondary, T0, normalize_phase=True)
@@ -235,10 +222,10 @@ def get_secondary_period(lc, phased, P_best, T0, o_factor, mf=2, verbose=True):
         eclipse_min = eclipse_min - 0.1
         eclipse_max = eclipse_max - 0.1
 
-    return P_secondary, phased_secondary, lc_nonprimary, noneclipse_fluxes, eclipse_min, eclipse_max, results_secondary, phased, T0
+    return P_secondary, phased_secondary, lc_nonprimary, noneclipse_fluxes.tolist(), eclipse_min, eclipse_max, results_secondary, phased, T0
 
 
-def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2, verbose=True):
+def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2, use_threads=None, verbose=True):
     """
     Determine the primary period of a binary system using the phased light curve.
 
@@ -258,6 +245,8 @@ def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2,
         The oversampling factor.
     mf: float, optional
         Multiplicative factor for eclipse width. Default is 2.
+    use_threads: int or None, optional
+        Number of threads to use for TLS calculations. Default is None (use all available threads).
     verbose: bool, optional
         If True, print progress messages. Default is True.
 
@@ -360,7 +349,8 @@ def get_primary_period(lc, phased, phased_secondary, P_best, T0, o_factor, mf=2,
 
     model_primary = transitleastsquares(lc_nonsecondary_nonan.time.value, lc_nonsecondary_nonan.flux.value, verbose=verbose)
 
-    results_primary = model_primary.power(period_min=0.99 * P_best, period_max=1.01 * P_best, oversampling_factor=o_factor, show_progress_bar=False)
+    results_primary = model_primary.power(period_min=0.99 * P_best, period_max=1.01 * P_best, oversampling_factor=o_factor, 
+                                          use_threads=use_threads, show_progress_bar=False)
     P_primary = results_primary.period
 
     phased_primary = lc_nonsecondary.fold(P_primary, T0, normalize_phase=True)
@@ -411,7 +401,7 @@ def find_orbital_period(tic_id, good_lc, flux_threshold=None, verbose=True):
         minP = 27 / 4  # The time length of a sector / 4 because there could be some missed eclipses due to cut data
         maxP = min(300, 4 * np.median(np.diff(eclipse_times)), (good_lc.time.value[-1] - good_lc.time.value[0]) / 2)
     else:  # If, on average, there are MORE THAN two eclipses per sector
-        minP = max(2.99, 0.5 * np.median(np.diff(eclipse_times)))
+        minP = max(0.5, 0.5 * np.median(np.diff(eclipse_times)))
         maxP = min(300, 4 * np.median(np.diff(eclipse_times)))
 
     if minP > maxP:
@@ -442,7 +432,7 @@ def find_orbital_period(tic_id, good_lc, flux_threshold=None, verbose=True):
     else:  # n_ecl == 1
         P_correct *= 2
 
-    if P_correct < 3:
+    if P_correct < 0.5:
         # Flag short-period binaries for manual inspection
         os.makedirs(config.data_path(), exist_ok=True)
         with open(config.data_path(config.SHORTPERIOD_TICIDS_LOG), 'a', newline='') as f:
@@ -489,7 +479,7 @@ def prepare_flat_lc(tic_id, good_lc, P_TLS, results_TLS, verbose=True):
     return flat_lc, t0, phased, o_factor
 
 
-def separate_eclipses(tic_id, flat_lc, phased, P_TLS, t0, o_factor, verbose=True):
+def separate_eclipses(tic_id, flat_lc, phased, P_TLS, t0, o_factor, use_threads=None,verbose=True):
     """Separate primary and secondary eclipses using TLS on masked light curves.
 
     Parameters
@@ -506,6 +496,8 @@ def separate_eclipses(tic_id, flat_lc, phased, P_TLS, t0, o_factor, verbose=True
         Reference time for phase-folding.
     o_factor : float
         Oversampling factor for TLS.
+    use_threads : int or None, optional
+        Number of threads to use for TLS calculations. Default is None (use all available threads).
     verbose : bool, optional
         Whether to print verbose output. Default True.
 
@@ -525,14 +517,17 @@ def separate_eclipses(tic_id, flat_lc, phased, P_TLS, t0, o_factor, verbose=True
         * results_primary: TLS results for the primary eclipse.
         * results_secondary: TLS results for the secondary eclipse.
     """
+    if use_threads is None:
+        use_threads = multiprocessing.cpu_count()
     P_sec, phased_sec, lc_nonpri, _, ecl_min, ecl_max, res_sec, phased, t0 = \
-        get_secondary_period(flat_lc, phased, P_TLS, t0, o_factor, mf=3, verbose=verbose)
+        get_secondary_period(flat_lc, phased, P_TLS, t0, o_factor, mf=3 if P_TLS > 4 else 2, 
+                             use_threads=use_threads, verbose=verbose)
     if P_sec == 0:
         config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
         return None
 
     P_pri, phased_pri, lc_nonsec, sec_ecl_min, sec_ecl_max, res_pri, phased, t0 = \
-        get_primary_period(flat_lc, phased, phased_sec, P_sec, t0, o_factor, mf=3, verbose=verbose)
+        get_primary_period(flat_lc, phased, phased_sec, P_sec, t0, o_factor, mf=3, use_threads=use_threads, verbose=verbose)
     if P_pri == 0:
         config.flag_ticid(tic_id, config.MANUAL_TICIDS_LOG)
         return None

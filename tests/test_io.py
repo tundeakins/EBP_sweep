@@ -115,6 +115,16 @@ def test_archive_preferred_over_eleanor(lc_io, monkeypatch, author):
     assert calls == (["QLP"] if author == "QLP" else ["QLP", "SPOC"])
 
 
+def test_skip_sectors_excludes_archive_light_curves(lc_io, monkeypatch):
+    curves = [_curve(lc_io, sector) for sector in (18, 19, 20)]
+    monkeypatch.setattr(lc_io.lk, "search_lightcurve", lambda *a, **kw: _archive_result(lc_io, curves))
+    monkeypatch.setattr(lc_io, "_load_eleanor_lcs", lambda *a: pytest.fail("Unexpected FFI extraction"))
+
+    lc = lc_io.load_and_clean_lc("TIC 123", skip_sectors=[19])
+
+    assert set(lc["sector"]) == {18, 20}
+
+
 def test_eleanor_fallback_conversion_and_sector_filter(lc_io, monkeypatch):
     import sys
     from types import SimpleNamespace
@@ -138,6 +148,26 @@ def test_eleanor_fallback_conversion_and_sector_filter(lc_io, monkeypatch):
     np.testing.assert_allclose(lc.flux_err.value, 0.01)
     assert set(lc["sector"]) == {2, 3}
     assert lc.meta["AUTHOR"] == "eleanor"
+
+
+def test_skip_sectors_excludes_eleanor_light_curves(lc_io, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    extracted = []
+    def target_data(source, **kwargs):
+        extracted.append(source.sector)
+        return SimpleNamespace(time=np.array([1500., 1501.]), corr_flux=np.ones(2),
+                               flux_err=np.ones(2), quality=np.zeros(2))
+    monkeypatch.setattr(lc_io.lk, "search_lightcurve", lambda *a, **kw: _archive_result(lc_io, []))
+    monkeypatch.setitem(sys.modules, "eleanor", SimpleNamespace(
+        multi_sectors=lambda **kw: [SimpleNamespace(sector=s) for s in (18, 19, 20)],
+        TargetData=target_data))
+
+    lc = lc_io.load_and_clean_lc("TIC 123", skip_sectors=[19])
+
+    assert extracted == [18, 20]
+    assert set(lc["sector"]) == {18, 20}
 
 
 @pytest.mark.parametrize("failure", [ImportError("eleanor"), RuntimeError("no FFI coverage")])

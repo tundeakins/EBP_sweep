@@ -20,17 +20,19 @@ from .utils import outlier_clipping
 
 
 
-def _load_eleanor_lcs(tic_id, sector_bounds):
+def _load_eleanor_lcs(tic_id, sector_bounds, skip_sectors=()):
     """Extract corrected FFI photometry, retaining only eleanor quality == 0."""
     import eleanor  # Optional: archived light curves do not need this dependency.
 
     tic = int(str(tic_id).upper().removeprefix("TIC").strip())
     lower, upper = sector_bounds
+    skip_sectors = set(skip_sectors)
     sources = eleanor.multi_sectors(tic=tic, sectors='all')
     curves = []
     for source in sources:
         if ((lower is not None and source.sector < lower)
-                or (upper is not None and source.sector > upper)):
+                or (upper is not None and source.sector > upper)
+                or source.sector in skip_sectors):
             continue
         try:
             data = eleanor.TargetData(source, do_pca=False, do_psf=False)
@@ -58,7 +60,8 @@ def _load_eleanor_lcs(tic_id, sector_bounds):
     return lk.LightCurveCollection(curves)
 
 
-def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_clip_sigma=2, sector_bounds=(None,None), eleanor_fallback=True):
+def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_clip_sigma=2, 
+                        sector_bounds=(None,None), eleanor_fallback=True, skip_sectors=()):
     """Download, background-filter, and outlier-clean the light curve.
 
     Returns good_lc (stitched, cleaned TessLightCurve) or None on failure.
@@ -88,6 +91,9 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_c
     sector_bounds : tuple, optional
         Tuple specifying the lower and upper bounds of sectors to include.
         Default is (None, None), which includes all sectors.
+    skip_sectors : sequence of int, optional
+        Sector numbers to exclude, in addition to the inclusive ``sector_bounds``.
+        Default is empty, which excludes no sectors.
 
     eleanor_fallback : bool, optional
         Extract FFI photometry with the optional ``eleanor`` package when no
@@ -102,11 +108,12 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_c
     Notes
     -----
     The function will automatically flag TIC IDs that fail to download or have impossible light curves.
-    It also allows filtering of sectors based on the specified sector_bounds.
+    It allows filtering sectors using ``sector_bounds`` and ``skip_sectors``.
     
 
     """
     lower_bound, upper_bound = sector_bounds
+    skip_sectors = tuple(skip_sectors)
     lc_collection = lk.LightCurveCollection([])
     for author in ("QLP", "SPOC"):
         for attempt in range(3):
@@ -127,6 +134,8 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_c
             keep &= sectors >= lower_bound
         if upper_bound is not None:
             keep &= sectors <= upper_bound
+        if skip_sectors:
+            keep &= ~np.isin(sectors, skip_sectors)
         if not np.any(keep):
             continue
         print(f"Downloading {author} light curve for {tic_id}...")
@@ -150,7 +159,7 @@ def load_and_clean_lc(tic_id, quality_bitmask='hard', mask_outliers=False, bkg_c
         if eleanor_fallback:
             print(f"No QLP/SPOC data in requested sectors for {tic_id}; trying eleanor...")
             try:
-                lc_collection = _load_eleanor_lcs(tic_id, sector_bounds)
+                lc_collection = _load_eleanor_lcs(tic_id, sector_bounds, skip_sectors)
             except ImportError as exc:
                 message = f"eleanor unavailable: {exc}. Install from the EBP_sweep clone with pip install -e '.[eleanor]'."
                 print(message)
